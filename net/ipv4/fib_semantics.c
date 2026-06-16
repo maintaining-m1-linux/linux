@@ -84,6 +84,25 @@
 
 #define endfor_nexthops(fi) }
 
+static inline struct dst_entry *get_dst_entry_from_nhc(struct fib_nh_common *nhc)
+{
+	if (!nhc || !nhc->nhc_pcpu_rth_output)
+		return NULL;
+
+	struct rtable *rt = rcu_dereference(*this_cpu_ptr(nhc->nhc_pcpu_rth_output));
+	return rt ? &rt->dst : NULL;
+}
+
+static inline long calculate_lowpower_weight(struct dst_entry *dst)
+{
+	struct dst_power *p = dst_power_ptr(dst);
+
+	if (!p)
+		return 0;
+
+	return (READ_ONCE(p->ema_load) + READ_ONCE(p->ema_time_delta)) * READ_ONCE(p->power_cost_weight);
+}
+
 
 const struct fib_prop fib_props[RTN_MAX + 1] = {
 	[RTN_UNSPEC] = {
@@ -2169,6 +2188,8 @@ void fib_select_multipath(struct fib_result *res, int hash,
 	bool use_neigh;
 	int score = -1;
 	__be32 saddr;
+	int lowpower_nh_index = -1;
+	long max_ema_weight = -1;
 
 	if (unlikely(res->fi->nh)) {
 		nexthop_path_fib_result(res, hash);
@@ -2180,6 +2201,8 @@ void fib_select_multipath(struct fib_result *res, int hash,
 
 	change_nexthops(fi) {
 		int nh_upper_bound, nh_score = 0;
+		struct dst_entry *dst;
+		long current_weight;
 
 		/* Nexthops without a carrier are assigned an upper bound of
 		 * minus one when "ignore_routes_with_linkdown" is set.
@@ -2189,19 +2212,35 @@ void fib_select_multipath(struct fib_result *res, int hash,
 		    (use_neigh && !fib_good_nh(nexthop_nh)))
 			continue;
 
+		dst = get_dst_entry_from_nhc(&nexthop_nh->nh_common);
+		current_weight = calculate_lowpower_weight(dst);
+
 		if (saddr && nexthop_nh->nh_saddr == saddr)
 			nh_score += 2;
 		if (hash <= nh_upper_bound)
 			nh_score++;
-		if (score < nh_score) {
-			res->nh_sel = nhsel;
-			res->nhc = &nexthop_nh->nh_common;
-			if (nh_score == 3 || (!saddr && nh_score == 1))
-				return;
-			score = nh_score;
-		}
 
+		/* Update if current nexthop has a higher affinity score,
+		 * or if the score is equal but it has a better power weight.
+		 */
+		if (nh_score > score || (nh_score == score && current_weight > max_ema_weight)) {
+			score = nh_score;
+			max_ema_weight = current_weight;
+			lowpower_nh_index = nhsel;
+
+			/* Early return if a perfect path is found */
+			if (nh_score == 3 || (!saddr && nh_score == 1)) {
+				res->nh_sel = nhsel;
+				res->nhc = &nexthop_nh->nh_common;
+				return;
+			}
+		}
 	} endfor_nexthops(fi);
+
+	if (lowpower_nh_index != -1) {
+		res->nh_sel = lowpower_nh_index;
+		res->nhc = fib_info_nhc(fi, lowpower_nh_index);
+	}
 }
 #endif
 

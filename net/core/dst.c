@@ -353,3 +353,25 @@ void metadata_dst_free_percpu(struct metadata_dst __percpu *md_dst)
 	free_percpu(md_dst);
 }
 EXPORT_SYMBOL_GPL(metadata_dst_free_percpu);
+
+#include <net/route.h>
+#include <net/ip6_fib.h>
+
+struct dst_power *dst_power_ptr(struct dst_entry *dst)
+{
+	if (!dst || !dst->ops)
+		return NULL;
+
+#if IS_ENABLED(CONFIG_IPV6)
+	if (dst->ops->family == AF_INET6) {
+		struct rt6_info *rt = (struct rt6_info *)dst;
+		return &rt->power;
+	}
+#endif
+	if (dst->ops->family == AF_INET) {
+		struct rtable *rt = (struct rtable *)dst;
+		return &rt->power;
+	}
+	return NULL;
+}
+EXPORT_SYMBOL(dst_power_ptr);

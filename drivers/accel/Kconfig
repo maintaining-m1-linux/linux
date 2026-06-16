@@ -30,5 +30,6 @@ source "drivers/accel/habanalabs/Kconfig"
 source "drivers/accel/ivpu/Kconfig"
 source "drivers/accel/qaic/Kconfig"
 source "drivers/accel/rocket/Kconfig"
+source "drivers/accel/ane/Kconfig"
 
 endif

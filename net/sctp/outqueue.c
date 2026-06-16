@@ -1430,8 +1430,17 @@ int sctp_outq_is_empty(const struct sctp_outq *q)
  *
  * Instead of printing 'sacked' or 'kept' for each TSN on the
  * transmitted_queue, we print a range: SACKED: TSN1-TSN2, TSN3, TSN4-TSN5.
- * KEPT TSN6-TSN7, etc.
  */
+static inline long calculate_lowpower_weight(struct dst_entry *dst)
+{
+	struct dst_power *p = dst_power_ptr(dst);
+
+	if (!p)
+		return 0;
+
+	return (READ_ONCE(p->ema_load) + READ_ONCE(p->ema_time_delta)) * READ_ONCE(p->power_cost_weight);
+}
+
 static void sctp_check_transmitted(struct sctp_outq *q,
 				   struct list_head *transmitted_queue,
 				   struct sctp_transport *transport,

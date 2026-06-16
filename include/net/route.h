@@ -75,6 +75,8 @@ struct rtable {
 	/* Miscellaneous cached information */
 	u32			rt_mtu_locked:1,
 				rt_pmtu:31;
+
+	struct dst_power	power;
 };
 
 #define dst_rtable(_ptr) container_of_const(_ptr, struct rtable, dst)

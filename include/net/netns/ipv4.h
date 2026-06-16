@@ -240,6 +240,11 @@ struct netns_ipv4 {
 	u32 tcp_challenge_timestamp;
 	u32 tcp_challenge_count;
 	u8 sysctl_tcp_plb_enabled;
+
+	/* Low power settings */
+	int sysctl_lowpower_ema_k_factor;
+	int sysctl_lowpower_power_cost_weight;
+
 	u8 sysctl_tcp_plb_idle_rehash_rounds;
 	u8 sysctl_tcp_plb_rehash_rounds;
 	u8 sysctl_tcp_plb_suspend_rto_sec;

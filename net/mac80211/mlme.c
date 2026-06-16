@@ -23,6 +23,7 @@
 #include <linux/slab.h>
 #include <linux/export.h>
 #include <net/mac80211.h>
+#include <net/mptcp.h>
 #include <linux/unaligned.h>
 
 #include "ieee80211_i.h"
@@ -10288,6 +10289,9 @@ void ieee80211_cqm_rssi_notify(struct ieee80211_vif *vif,
 	trace_api_cqm_rssi_notify(sdata, rssi_event, rssi_level);
 
 	cfg80211_cqm_rssi_notify(sdata->dev, rssi_event, rssi_level, gfp);
+
+	if (rssi_event == NL80211_CQM_RSSI_THRESHOLD_EVENT_LOW)
+		mptcp_wireless_rssi_monitor(rssi_level);
 }
 EXPORT_SYMBOL(ieee80211_cqm_rssi_notify);
 

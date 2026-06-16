@@ -231,6 +231,11 @@ static inline __be32 mptcp_reset_option(const struct sk_buff *skb)
 }
 
 void mptcp_active_detect_blackhole(struct sock *sk, bool expired);
+
+struct napi_struct;
+void mptcp_napi_monitor(struct napi_struct *napi, int work_done);
+void mptcp_wireless_rssi_monitor(int rssi_level);
+int mptcp_transfer_tcp_to_mptcp(struct sock *sk);
 #else
 
 static inline void mptcp_init(void)
@@ -317,6 +322,11 @@ static inline struct request_sock *mptcp_subflow_reqsk_alloc(const struct reques
 static inline __be32 mptcp_reset_option(const struct sk_buff *skb)  { return htonl(0u); }
 
 static inline void mptcp_active_detect_blackhole(struct sock *sk, bool expired) { }
+
+struct napi_struct;
+static inline void mptcp_napi_monitor(struct napi_struct *napi, int work_done) { }
+static inline void mptcp_wireless_rssi_monitor(int rssi_level) { }
+static inline int mptcp_transfer_tcp_to_mptcp(struct sock *sk) { return -EOPNOTSUPP; }
 #endif /* CONFIG_MPTCP */
 
 #if IS_ENABLED(CONFIG_MPTCP_IPV6)

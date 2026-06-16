@@ -97,6 +97,16 @@ struct dst_entry {
 #endif
 };
 
+struct dst_power {
+	u64 ema_load;
+	u64 ema_time_delta;
+	u64 last_update_jiffies;
+	unsigned int ema_k_factor;
+	unsigned int power_cost_weight;
+};
+
+struct dst_power *dst_power_ptr(struct dst_entry *dst);
+
 struct dst_metrics {
 	u32		metrics[RTAX_MAX];
 	refcount_t	refcnt;

@@ -217,6 +217,8 @@ struct rt6_info {
 
 	/* more non-fragment space at head required */
 	unsigned short			rt6i_nfheader_len;
+
+	struct dst_power		power;
 };
 
 struct fib6_result {

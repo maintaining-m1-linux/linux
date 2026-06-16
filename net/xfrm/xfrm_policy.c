@@ -2702,6 +2702,15 @@ static struct dst_entry *xfrm_bundle_create(struct xfrm_policy *policy,
 			goto put_states;
 		}
 
+		struct dst_power *p = dst_power_ptr(dst1);
+		if (p) {
+			WRITE_ONCE(p->ema_k_factor, READ_ONCE(dev_net(dst_dev(dst1))->ipv4.sysctl_lowpower_ema_k_factor));
+			WRITE_ONCE(p->power_cost_weight, READ_ONCE(dev_net(dst_dev(dst1))->ipv4.sysctl_lowpower_power_cost_weight));
+			WRITE_ONCE(p->ema_load, 0);
+			WRITE_ONCE(p->ema_time_delta, 0);
+			p->last_update_jiffies = 0;
+		}
+
 		bundle[i] = xdst;
 		if (!xdst_prev)
 			xdst0 = xdst;

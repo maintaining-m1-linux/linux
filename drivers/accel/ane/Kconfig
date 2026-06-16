@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config DRM_ACCEL_APPLE_ANE
+	tristate "Apple Neural Engine (ANE) Accelerator"
+	depends on DRM_ACCEL
+	depends on (ARCH_APPLE && ARM64) || COMPILE_TEST
+	help
+	  Choose this option if you have an Apple Silicon SoC (such as the M1)
+	  that contains a compatible Apple Neural Engine (ANE) NPU.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ane.

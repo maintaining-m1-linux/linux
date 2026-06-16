@@ -42,6 +42,9 @@ static u32 u32_max_div_HZ = UINT_MAX / HZ;
 static int one_day_secs = 24 * 3600;
 static u32 fib_multipath_hash_fields_all_mask __maybe_unused =
 	FIB_MULTIPATH_HASH_FIELD_ALL_MASK;
+
+static unsigned int zero = 0;
+static unsigned int one_zero_two_four = 1024;
 static unsigned int tcp_child_ehash_entries_max = 16 * 1024 * 1024;
 static unsigned int udp_child_hash_entries_max = UDP_HTABLE_SIZE_MAX;
 static int tcp_plb_max_rounds = 31;
@@ -1609,6 +1612,22 @@ static struct ctl_table ipv4_net_table[] = {
 		.extra2		= &tcp_syn_linear_timeouts_max,
 	},
 	{
+		.procname	= "lowpower_ema_k_factor",
+		.data		= &init_net.ipv4.sysctl_lowpower_ema_k_factor,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one_zero_two_four
+	},
+	{
+		.procname	= "lowpower_power_cost_weight",
+		.data		= &init_net.ipv4.sysctl_lowpower_power_cost_weight,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec
+	},
+	{
 		.procname	= "tcp_shrink_window",
 		.data		= &init_net.ipv4.sysctl_tcp_shrink_window,
 		.maxlen		= sizeof(u8),
@@ -1682,6 +1701,9 @@ static __net_init int ipv4_sysctl_init_net(struct net *net)
 		goto err_ports;
 
 	proc_fib_multipath_hash_set_seed(net, 0);
+
+	net->ipv4.sysctl_lowpower_ema_k_factor = 512;
+	net->ipv4.sysctl_lowpower_power_cost_weight = 100;
 
 	return 0;
 

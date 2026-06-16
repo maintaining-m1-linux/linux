@@ -68,6 +68,8 @@
  *				        - netif_rx() feedback
  */
 
+#define EMA_UPDATE(K, Old, New) (((K) * (New) + (1024 - (K)) * (Old)) / 1024)
+
 #include <linux/uaccess.h>
 #include <linux/bitmap.h>
 #include <linux/capability.h>
@@ -100,6 +102,7 @@
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <net/busy_poll.h>
+#include <net/mptcp.h>
 #include <linux/rtnetlink.h>
 #include <linux/stat.h>
 #include <net/dsa.h>
@@ -172,6 +175,7 @@ static DEFINE_SPINLOCK(ptype_lock);
 struct list_head ptype_base[PTYPE_HASH_SIZE] __read_mostly;
 
 static int netif_rx_internal(struct sk_buff *skb);
+static void update_dst_ems_metrics(struct dst_entry *dst, unsigned int tx_bytes);
 static int call_netdevice_notifiers_extack(unsigned long val,
 					   struct net_device *dev,
 					   struct netlink_ext_ack *extack);
@@ -3902,6 +3906,12 @@ struct sk_buff *dev_hard_start_xmit(struct sk_buff *first, struct net_device *de
 
 		skb_mark_not_on_list(skb);
 		rc = xmit_one(skb, dev, txq, next != NULL);
+		if (likely(dev_xmit_complete(rc))) {
+			struct dst_entry *dst = skb_dst(skb);
+			if (dst)
+				update_dst_ems_metrics(dst, skb->len);
+		}
+
 		if (unlikely(!dev_xmit_complete(rc))) {
 			skb->next = next;
 			goto out;
@@ -7727,14 +7737,25 @@ static int __napi_poll(struct napi_struct *n, bool *repoll)
 		trace_napi_poll(n, work, weight);
 
 		xdp_do_check_flushed(n);
+		mptcp_napi_monitor(n, work);
 	}
 
 	if (unlikely(work > weight))
 		netdev_err_once(n->dev, "NAPI poll function %pS returned %d, exceeding its budget of %d.\n",
 				n->poll, work, weight);
 
-	if (likely(work < weight))
+	if (likely(work < weight)) {
+		/* traffic is low, decrease weight for next time */
+		if (work < (weight / 2) && weight > 16)
+			n->weight = max(weight / 2, 16);
 		return work;
+	}
+
+	/* If we got here, work == weight, which means high traffic.
+	 * Increase weight for next time.
+	 */
+	if (n->weight < (NAPI_POLL_WEIGHT * 4))
+		n->weight = min(n->weight * 2, NAPI_POLL_WEIGHT * 4);
 
 	/* Drivers must not modify the NAPI state if they
 	 * consume the entire weight.  In such cases this code
@@ -13339,6 +13360,38 @@ out:
 	}
 
 	return rc;
+}
+
+static void update_dst_ems_metrics(struct dst_entry *dst, unsigned int tx_bytes)
+{
+	u64 cur_jiffies = get_jiffies_64();
+	struct dst_power *p = dst_power_ptr(dst);
+	u64 cur_load_rate;
+	u64 delta_t;
+
+	if (!p)
+		return;
+
+	delta_t = cur_jiffies - READ_ONCE(p->last_update_jiffies);
+
+	if (!delta_t)
+		return;
+
+	cur_load_rate = tx_bytes / delta_t;
+
+	WRITE_ONCE(p->ema_load, EMA_UPDATE(READ_ONCE(p->ema_k_factor), READ_ONCE(p->ema_load),
+				   cur_load_rate));
+
+	u64 diff;
+	if (cur_load_rate > READ_ONCE(p->ema_load))
+		diff = cur_load_rate - READ_ONCE(p->ema_load);
+	else
+		diff = READ_ONCE(p->ema_load) - cur_load_rate;
+
+	WRITE_ONCE(p->ema_time_delta, EMA_UPDATE(READ_ONCE(p->ema_k_factor),
+					 READ_ONCE(p->ema_time_delta),
+					 diff));
+	WRITE_ONCE(p->last_update_jiffies, cur_jiffies);
 }
 
 subsys_initcall(net_dev_init);
