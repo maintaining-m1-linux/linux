@@ -760,6 +760,10 @@ struct hci_conn {
 
 	unsigned int	sent;
 
+#if IS_ENABLED(CONFIG_BT_BRCMEXT)
+	bool		brcm_high_prio;
+#endif
+
 	struct sk_buff_head data_q;
 	struct list_head chan_list;
 
