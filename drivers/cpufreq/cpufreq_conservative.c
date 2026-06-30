@@ -214,7 +214,9 @@ static inline _Bool lap_is_on_ac(int *battery_capacity)
     return 0;
 }
 
-/* lap_dbs_update - compute extrapolated load via Richardson Extrapolation across all CPUs */
+static unsigned int global_eff_load = 0;
+
+/* lap_dbs_update - compute standard CPU load across all CPUs */
 static unsigned int lap_dbs_update(struct cpufreq_policy *policy, bool ignore_nice,
                    bool on_ac, int battery_capacity)
 {
@@ -224,6 +226,8 @@ static unsigned int lap_dbs_update(struct cpufreq_policy *policy, bool ignore_ni
     unsigned int eff_cpus = 0, perf_cpus = 0;
     u64 cur_time;
     u64 cur_idle, cur_nice;
+    unsigned int global_min_freq = UINT_MAX;
+    unsigned int current_cpu;
 
     if (!lp || !cpumask_weight(policy->cpus))
         return 0;
@@ -236,14 +240,20 @@ static unsigned int lap_dbs_update(struct cpufreq_policy *policy, bool ignore_ni
     eff_cpus = cpumask_weight(&lp->eff_mask);
     perf_cpus = cpumask_weight(&lp->perf_mask);
 
-    /* Compute Richardson extrapolated load per CPU core */
+    /* Find global min max_freq to identify efficiency cores */
+    for_each_possible_cpu(current_cpu) {
+        unsigned int max_val = cpufreq_quick_get_max(current_cpu);
+        if (max_val > 0 && max_val < global_min_freq)
+            global_min_freq = max_val;
+    }
+
+    /* Compute standard CPU load per CPU core */
     for_each_cpu(cpu, policy->cpus) {
         struct lap_cpu_dbs *cdbs = per_cpu_ptr(&lap_cpu_dbs, cpu);
-        unsigned int time_elapsed_h, time_elapsed_2h;
-        u64 idle_delta_h, idle_delta_2h;
-        u64 nice_delta_h, nice_delta_2h;
-        int load_h = 0, load_2h = 0;
-        int extrapolated_load;
+        unsigned int time_elapsed;
+        u64 idle_delta;
+        u64 nice_delta;
+        int load = 0;
 
         cur_idle = get_cpu_idle_time_us(cpu, &cur_time);
         if (cur_idle == (u64)-1) {
@@ -255,60 +265,38 @@ static unsigned int lap_dbs_update(struct cpufreq_policy *policy, bool ignore_ni
         }
         cur_nice = jiffies_to_usecs(kcpustat_cpu(cpu).cpustat[CPUTIME_NICE]);
 
-        /* 1. Compute metrics for interval h (current single sample step) */
-        time_elapsed_h = (unsigned int)(cur_time - cdbs->prev_update_time);
-        idle_delta_h = cur_idle - cdbs->prev_cpu_idle;
-        nice_delta_h = cur_nice - cdbs->prev_cpu_nice;
+        time_elapsed = (unsigned int)(cur_time - cdbs->prev_update_time);
+        idle_delta = cur_idle - cdbs->prev_cpu_idle;
+        nice_delta = cur_nice - cdbs->prev_cpu_nice;
 
-        if (likely(time_elapsed_h > 0)) {
-            int busy_h = time_elapsed_h - idle_delta_h;
+        if (likely(time_elapsed > 0)) {
+            int busy = time_elapsed - idle_delta;
             if (ignore_nice)
-                busy_h -= nice_delta_h;
-            if (busy_h < 0)
-                busy_h = 0;
-            load_h = 100 * busy_h / time_elapsed_h;
+                busy -= nice_delta;
+            if (busy < 0)
+                busy = 0;
+            load = 100 * busy / time_elapsed;
         }
-
-        /* 2. Compute metrics for interval 2h (combined previous and current sample step) */
-        if (likely(cdbs->prev2_update_time > 0)) {
-            time_elapsed_2h = (unsigned int)(cur_time - cdbs->prev2_update_time);
-            idle_delta_2h = cur_idle - cdbs->prev2_cpu_idle;
-            nice_delta_2h = cur_nice - cdbs->prev2_cpu_nice;
-
-            if (likely(time_elapsed_2h > 0)) {
-                int busy_2h = time_elapsed_2h - idle_delta_2h;
-                if (ignore_nice)
-                    busy_2h -= nice_delta_2h;
-                if (busy_2h < 0)
-                    busy_2h = 0;
-                load_2h = 100 * busy_2h / time_elapsed_2h;
-            }
-        } else {
-            /* Fallback to load_h if historical records are missing during early stages */
-            load_2h = load_h;
-        }
-
-        /* 3. Apply Richardson Extrapolation formula: L = 2 * F(h) - F(2h) */
-        extrapolated_load = (2 * load_h) - load_2h;
-        if (extrapolated_load > 100)
-            extrapolated_load = 100;
-        if (extrapolated_load < 0)
-            extrapolated_load = 0;
-
-        /* 4. Shift snapshot windows to preserve history */
-        cdbs->prev2_cpu_idle = cdbs->prev_cpu_idle;
-        cdbs->prev2_cpu_nice = cdbs->prev_cpu_nice;
-        cdbs->prev2_update_time = cdbs->prev_update_time;
 
         cdbs->prev_cpu_idle = cur_idle;
         cdbs->prev_cpu_nice = cur_nice;
         cdbs->prev_update_time = cur_time;
 
-        if (cpumask_test_cpu(cpu, &lp->eff_mask))
-            eff_load_sum += extrapolated_load;
-        else if (cpumask_test_cpu(cpu, &lp->perf_mask))
-            perf_load_sum += extrapolated_load;
-        load_sum += extrapolated_load;
+        if (cpufreq_quick_get_max(cpu) == global_min_freq) {
+            eff_load_sum += load;
+        } else {
+            /* Strict P-core throttling: keep P-cores idle until E-cores load reaches 75% */
+            if (READ_ONCE(global_eff_load) < 75)
+                load = 0;
+            perf_load_sum += load;
+        }
+        load_sum += load;
+    }
+
+    /* Record global E-core load to coordinate E-core and P-core scaling */
+    if (eff_cpus) {
+        unsigned int eff_load_avg = eff_load_sum / eff_cpus;
+        WRITE_ONCE(global_eff_load, eff_load_avg);
     }
 
     /* Calculate average load based on cluster topology and battery capacity */
@@ -413,11 +401,8 @@ static unsigned long cs_dbs_update(struct cpufreq_policy *policy)
     mutex_lock(&lp->lock);
     {
         unsigned int idle_periods = lp->idle_periods;
-        unsigned int smoothed_load = lp->smoothed_load;
 
-        smoothed_load = (ema_alpha * load + (100 - ema_alpha) * smoothed_load) / 100;
-
-        if (smoothed_load > (unsigned int)eff_up) {
+        if (load > (unsigned int)eff_up) {
             if (requested_freq != policy->max) {
                 requested_freq += step_khz;
                 if (requested_freq > policy->max)
@@ -444,7 +429,7 @@ static unsigned long cs_dbs_update(struct cpufreq_policy *policy)
         lp->prev_load = load;
         lp->requested_freq = requested_freq;
         lp->idle_periods = idle_periods;
-        lp->smoothed_load = smoothed_load;
+        lp->smoothed_load = load;
 
         if (refresh_power) {
             lp->tuners.last_on_ac = on_ac;

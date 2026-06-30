@@ -517,7 +517,10 @@ impl PwrConfig {
 
     /// Load the GPU power configuration from the device tree.
     pub(crate) fn load(dev: &AsahiDevice, cfg: &HwConfig) -> Result<PwrConfig> {
-        let perf_states = Self::load_opp(dev, c_str!("operating-points-v2"), cfg, true)?;
+        let mut perf_states = Self::load_opp(dev, c_str!("operating-points-v2"), cfg, true)?;
+        for ps in perf_states.iter_mut() {
+            ps.pwr_mw = (ps.pwr_mw * 85) / 100; // 15% reduction to scale down GPU peak power limits
+        }
         let node = dev.as_ref().of_node().ok_or(EIO)?;
 
         macro_rules! prop {
@@ -582,6 +585,8 @@ impl PwrConfig {
         };
 
         let power_sample_period: u32 = prop!("apple,power-sample-period");
+        let avg_power_filter_tc_ms: u32 = prop!("apple,avg-power-filter-tc-ms");
+        let avg_power_target_filter_tc: u32 = prop!("apple,avg-power-target-filter-tc");
 
         Ok(PwrConfig {
             core_leak_coef,
@@ -594,11 +599,12 @@ impl PwrConfig {
             perf_max_pstate: perf_states.len() as u32 - 1,
             min_sram_microvolt: prop!("apple,min-sram-microvolt"),
 
-            avg_power_filter_tc_ms: prop!("apple,avg-power-filter-tc-ms"),
+            // Tuned for conservative behavior: slow down frequency scaling response (2x delay)
+            avg_power_filter_tc_ms: avg_power_filter_tc_ms * 2,
             avg_power_ki_only: prop!("apple,avg-power-ki-only"),
             avg_power_kp: prop!("apple,avg-power-kp"),
             avg_power_min_duty_cycle: prop!("apple,avg-power-min-duty-cycle"),
-            avg_power_target_filter_tc: prop!("apple,avg-power-target-filter-tc"),
+            avg_power_target_filter_tc: avg_power_target_filter_tc * 2,
             fast_die0_integral_gain: prop!("apple,fast-die0-integral-gain"),
             fast_die0_proportional_gain: prop!("apple,fast-die0-proportional-gain"),
             fast_die0_prop_tgt_delta: prop!("apple,fast-die0-prop-tgt-delta", 0),
