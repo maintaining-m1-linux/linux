@@ -5,13 +5,11 @@
 
 #if IS_ENABLED(CONFIG_BT_BRCMEXT)
 
-int brcm_set_high_priority(struct hci_dev *hdev, struct hci_conn *conn,
-			   bool enable);
+int brcm_set_high_priority(struct hci_dev *hdev, u16 handle, bool enable);
 
 #else
 
-static inline int brcm_set_high_priority(struct hci_dev *hdev,
-					 struct hci_conn *conn, bool enable)
+static inline int brcm_set_high_priority(struct hci_dev *hdev, u16 handle, bool enable)
 {
 	return 0;
 }
