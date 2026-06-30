@@ -133,7 +133,7 @@ static u32 calculate_dac(struct apple_dcp *dcp, int val)
 				  brightness_part12, ARRAY_SIZE(brightness_part12));
 	}
 
-	return (16 * dac * 92) / 100; /* Scale down max backlight strength by 8% to improve display efficiency */
+	return 16 * dac;
 }
 
 static int drm_crtc_set_brightness(struct apple_dcp *dcp)

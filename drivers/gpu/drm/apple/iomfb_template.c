@@ -12,6 +12,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/iommu.h>
 #include <linux/kref.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/pm_runtime.h>
@@ -1283,8 +1284,10 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 	struct drm_plane_state *new_state, *old_state;
 	struct drm_crtc_state *crtc_state;
 	struct DCP_FW_NAME(dcp_swap_submit_req) *req = &DCP_FW_UNION(dcp->swap);
-	int plane_idx, l;
+	struct apple_plane_state *old_apple_state;
+	int plane_idx, l, old_l;
 	int has_surface = 0;
+	bool duplicate = true;
 
 	crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
 
@@ -1327,10 +1330,29 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		 */
 
 		l = MAX_BLEND_SURFACES - new_state->normalized_zpos;
+		old_l = MAX_BLEND_SURFACES - old_state->normalized_zpos;
 
 		WARN_ON(l > MAX_BLEND_SURFACES);
 
 		req->swap.swap_enabled |= BIT(l);
+
+		/* Detect duplicated frames to skip pointless DCP re-rendering. */
+		if (old_state->crtc != new_state->crtc ||
+		    old_state->visible != new_state->visible ||
+		    old_l != l ||
+		    old_state->fb != new_state->fb) {
+			duplicate = false;
+		} else if (new_state->visible && new_state->fb) {
+			old_apple_state = to_apple_plane_state(old_state);
+			if (old_apple_state->iova != apple_state->iova ||
+			    memcmp(&old_apple_state->src_rect, &apple_state->src_rect,
+				   sizeof(apple_state->src_rect)) ||
+			    memcmp(&old_apple_state->dst_rect, &apple_state->dst_rect,
+				   sizeof(apple_state->dst_rect)) ||
+			    memcmp(&old_apple_state->surf, &apple_state->surf,
+				   sizeof(apple_state->surf)))
+				duplicate = false;
+		}
 
 		if (old_state->fb && new_state->fb != old_state->fb) {
 			/*
@@ -1376,6 +1398,17 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		if (dcp->connector_type == DRM_MODE_CONNECTOR_eDP &&
 		    req->surf[l].base.colorspace == DCP_COLORSPACE_BG_SRGB)
 			req->surf[l].base.colorspace = DCP_COLORSPACE_NATIVE;
+	}
+
+	/*
+	 * Skip sending a new swap to the DCP when the visible planes have not
+	 * actually changed. This avoids re-rendering the same frame, saving
+	 * power without dimming the backlight.
+	 */
+	if (has_surface && duplicate && !crtc_state->color_mgmt_changed &&
+	    !dcp->brightness.update && !drm_atomic_crtc_needs_modeset(crtc_state)) {
+		dcp_drm_crtc_page_flip(dcp, ktime_get());
+		return;
 	}
 
 	if (!has_surface && !crtc_state->color_mgmt_changed) {
