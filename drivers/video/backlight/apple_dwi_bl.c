@@ -46,6 +46,9 @@ static int dwi_bl_update_status(struct backlight_device *bl)
 	int brightness = backlight_get_brightness(bl);
 	int ret;
 
+	if (brightness == 0 && dwi_bl->is_suspended)
+		return 0;
+
 	if (brightness > 0 && dwi_bl->is_suspended) {
 		ret = pm_runtime_get_sync(bl->dev.parent);
 		if (ret < 0) {
@@ -75,8 +78,12 @@ static int dwi_bl_update_status(struct backlight_device *bl)
 static int dwi_bl_get_brightness(struct backlight_device *bl)
 {
 	struct apple_dwi_bl *dwi_bl = bl_get_data(bl);
+	u32 cmd;
 
-	u32 cmd = readl(dwi_bl->base + DWI_BL_CMD);
+	if (dwi_bl->is_suspended)
+		return 0;
+
+	cmd = readl(dwi_bl->base + DWI_BL_CMD);
 
 	return FIELD_GET(DWI_BL_CMD_DATA, cmd);
 }
