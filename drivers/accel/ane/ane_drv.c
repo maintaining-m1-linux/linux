@@ -8,6 +8,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
+#include <linux/overflow.h>
 
 #include <drm/drm_accel.h>
 #include <drm/drm_drv.h>
@@ -230,6 +231,8 @@ static int ane_submit(struct drm_device *drm, void *data, struct drm_file *file)
 	struct drm_ane_submit *args = data;
 	struct ane_bo *bo;
 	int err;
+	u64 cmd_size;
+	u64 btsp_req_size;
 
 	struct ane_request req;
 	memset(&req, 0, sizeof(req));
@@ -239,6 +242,16 @@ static int ane_submit(struct drm_device *drm, void *data, struct drm_file *file)
 	    !args->btsp_handle) {
 		return -EINVAL;
 	}
+
+	cmd_size = round_up(args->tsk_size, ANE_CMD_GRAN);
+	if (cmd_size < args->tsk_size)
+		return -EINVAL;
+
+	if (args->td_size < 4 || (args->td_size & 3))
+		return -EINVAL;
+
+	if (check_mul_overflow((u64)args->td_size, (u64)args->td_count, &btsp_req_size))
+		return -EINVAL;
 
 	req.qid = 4;
 	req.nid = ANE_FIFO_NID;
@@ -250,7 +263,7 @@ static int ane_submit(struct drm_device *drm, void *data, struct drm_file *file)
 			bo = bo_lookup(file, args->handles[bdx]);
 			if (!bo || !bo->iova ||
 			    ((bdx == CMD_BUF_BDX) &&
-			     (args->tsk_size >= (bo->npages << ane->shift))))
+			     (cmd_size >= (bo->npages << ane->shift))))
 				return -EINVAL;
 			req.bar[bdx] = lower_32_bits(bo->iova);
 		}
@@ -262,10 +275,10 @@ static int ane_submit(struct drm_device *drm, void *data, struct drm_file *file)
 	 * buffer and calculate the delimiter (where the weights would start).
 	 */
 	req.bar[KRN_BUF_BDX] =
-		req.bar[CMD_BUF_BDX] + round_up(args->tsk_size, ANE_CMD_GRAN);
+		req.bar[CMD_BUF_BDX] + cmd_size;
 
 	bo = bo_lookup(file, args->btsp_handle);
-	if (!bo)
+	if (!bo || !bo->iova || btsp_req_size > (bo->npages << ane->shift))
 		return -EINVAL;
 	req.btsp_iova = lower_32_bits(bo->iova);
 
