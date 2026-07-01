@@ -464,6 +464,8 @@ static int apple_spi_probe(struct platform_device *pdev)
 	if (!ctlr)
 		return -ENOMEM;
 
+	platform_set_drvdata(pdev, ctlr);
+
 	spi = spi_controller_get_devdata(ctlr);
 	init_completion(&spi->done);
 
