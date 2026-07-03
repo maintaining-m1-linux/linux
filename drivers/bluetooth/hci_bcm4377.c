@@ -2295,8 +2295,8 @@ static void bcm4377_pm_runtime_disable(void *data)
 {
 	struct pci_dev *pdev = data;
 
-	pm_runtime_disable(&pdev->dev);
 	pm_runtime_dont_use_autosuspend(&pdev->dev);
+	pm_runtime_forbid(&pdev->dev);
 }
 
 static int bcm4377_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -2452,8 +2452,10 @@ static int bcm4377_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	pm_runtime_set_autosuspend_delay(&pdev->dev, 2000);
 	pm_runtime_use_autosuspend(&pdev->dev);
-	pm_runtime_irq_safe(&pdev->dev);
-	pm_runtime_enable(&pdev->dev);
+	/* pm_runtime_enable() already called by PCI bus core (pci/bus.c);
+	 * calling it again would cause "Unbalanced pm_runtime_enable!"
+	 * pm_runtime_irq_safe(&pdev->dev) is removed to avoid lock/timing issues in GNOME bluetooth. */
+	pm_runtime_mark_last_busy(&pdev->dev);
 	pm_runtime_put_autosuspend(&pdev->dev);
 
 	return 0;
