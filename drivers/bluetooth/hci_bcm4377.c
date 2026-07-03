@@ -2510,6 +2510,7 @@ static int bcm4377_runtime_suspend(struct device *dev)
 	iowrite32(BCM4377_BAR0_SLEEP_CONTROL_QUIESCE,
 		  bcm4377->bar0 + BCM4377_BAR0_SLEEP_CONTROL);
 
+	pci_save_state(pdev);
 	return 0;
 }
 
