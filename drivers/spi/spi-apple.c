@@ -496,6 +496,7 @@ static int apple_spi_probe(struct platform_device *pdev)
 	ctlr->auto_runtime_pm = true;
 
 	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_get_noresume(&pdev->dev);
 	ret = devm_pm_runtime_enable(&pdev->dev);
 	if (ret < 0)
 		return ret;
