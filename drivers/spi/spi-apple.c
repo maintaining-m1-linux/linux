@@ -500,6 +500,7 @@ static int apple_spi_probe(struct platform_device *pdev)
 	pm_runtime_set_autosuspend_delay(&pdev->dev, 100);
 	pm_runtime_use_autosuspend(&pdev->dev);
 	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_get_noresume(&pdev->dev);
 	ret = devm_pm_runtime_enable(&pdev->dev);
 	if (ret < 0)
 		return ret;
