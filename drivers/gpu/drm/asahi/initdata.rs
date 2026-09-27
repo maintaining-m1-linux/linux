@@ -28,10 +28,84 @@ use kernel::error::{
 };
 use kernel::macros::versions;
 use kernel::prelude::*;
+use kernel::{c_str, str::CStr};
 use kernel::try_init;
 
 use ::pin_init;
 use ::pin_init::Init;
+
+/// Maximum number of differing ranges reported per structure.
+const MAX_REPORTED_MISMATCHES: usize = 32;
+
+/// Compare a driver-built firmware structure against the reference blob provided by the
+/// bootloader and log every differing range (4-byte aligned, merged across short equal gaps),
+/// so the offending fields can be identified instead of only the first differing byte.
+fn compare_with_reference(dev: &AsahiDevice, name: &CStr, ours: &[u8], reference: &[u8]) {
+    let mut matches = true;
+
+    if ours.len() != reference.len() {
+        matches = false;
+        dev_err!(
+            dev.as_ref(),
+            "!!! {} size mismatch: {} {}\n",
+            name,
+            ours.len(),
+            reference.len()
+        );
+    }
+
+    let len = core::cmp::min(ours.len(), reference.len());
+    let mut reported = 0;
+    let mut i = 0;
+    while i < len {
+        if ours[i] == reference[i] {
+            i += 1;
+            continue;
+        }
+        matches = false;
+
+        let start = i & !3;
+        let mut end = i + 1;
+        while end < len {
+            if ours[end] != reference[end] {
+                end += 1;
+            } else if (end..core::cmp::min(end + 8, len)).any(|j| ours[j] != reference[j]) {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        let end = core::cmp::min((end + 3) & !3, len);
+        i = end;
+
+        if reported < MAX_REPORTED_MISMATCHES {
+            let shown = core::cmp::min(end, start + 32);
+            dev_err!(
+                dev.as_ref(),
+                "!!! {} mismatch @{:#x}+{:#x}: ours {:02x?} ref {:02x?}\n",
+                name,
+                start,
+                end - start,
+                &ours[start..shown],
+                &reference[start..shown]
+            );
+        }
+        reported += 1;
+    }
+
+    if reported > MAX_REPORTED_MISMATCHES {
+        dev_err!(
+            dev.as_ref(),
+            "!!! {}: {} more mismatching ranges not shown\n",
+            name,
+            reported - MAX_REPORTED_MISMATCHES
+        );
+    }
+
+    if matches {
+        dev_info!(dev.as_ref(), "!!! {} match\n", name);
+    }
+}
 
 /// Builder helper for the global GPU InitData.
 #[versions(AGX)]
@@ -483,33 +557,15 @@ impl<'a> InitDataBuilder::ver<'a> {
                         raw.unk_hws2[i] = if *j == 0xffff { 0 } else { j / 2 };
                     }
 
-                    if !dyncfg.hw_data_b.is_empty() {
-                        unsafe {
-                            let mut matches: bool = true;
-                            let sla = core::slice::from_raw_parts(
+                    if !dyncfg.hw_data_a.is_empty() {
+                        // SAFETY: `raw` is a fully initialized plain-data firmware struct.
+                        let ours = unsafe {
+                            core::slice::from_raw_parts(
                                 raw as *const raw::HwDataA::ver as *const u8,
                                 core::mem::size_of::<raw::HwDataA::ver>(),
-                            );
-                            if sla.len() != dyncfg.hw_data_a.len() {
-                                matches = false;
-                                dev_err!(
-                                    self.dev.as_ref(),
-                                    "!!! Hwdata A size mismatch: {} {}",
-                                    sla.len(),
-                                    dyncfg.hw_data_a.len(),
-                                );
-                            }
-                            for i in 0..core::cmp::min(sla.len(), dyncfg.hw_data_a.len()) {
-                                if sla[i] != dyncfg.hw_data_a[i] {
-                                    matches = false;
-                                    dev_err!(self.dev.as_ref(), "!!! Hwdata A first mismatch: {i}");
-                                    break;
-                                }
-                            }
-                            if matches {
-                                dev_info!(self.dev.as_ref(), "!!! Hwdata A match");
-                            }
-                        }
+                            )
+                        };
+                        compare_with_reference(self.dev, c_str!("Hwdata A"), ours, &dyncfg.hw_data_a);
                     }
 
                     Ok(())
@@ -663,32 +719,14 @@ impl<'a> InitDataBuilder::ver<'a> {
                     }
 
                     if !dyncfg.hw_data_b.is_empty() {
-                        unsafe {
-                            let mut matches: bool = true;
-                            let sla = core::slice::from_raw_parts(
+                        // SAFETY: `raw` is a fully initialized plain-data firmware struct.
+                        let ours = unsafe {
+                            core::slice::from_raw_parts(
                                 raw as *const raw::HwDataB::ver as *const u8,
                                 core::mem::size_of::<raw::HwDataB::ver>(),
-                            );
-                            if sla.len() != dyncfg.hw_data_b.len() {
-                                matches = false;
-                                dev_err!(
-                                    self.dev.as_ref(),
-                                    "!!! Hwdata B size mismatch: {} {}",
-                                    sla.len(),
-                                    dyncfg.hw_data_b.len(),
-                                );
-                            }
-                            for i in 0..core::cmp::min(sla.len(), dyncfg.hw_data_b.len()) {
-                                if sla[i] != dyncfg.hw_data_b[i] {
-                                    matches = false;
-                                    dev_err!(self.dev.as_ref(), "!!! Hwdata B first mismatch: {i}");
-                                    break;
-                                }
-                            }
-                            if matches {
-                                dev_info!(self.dev.as_ref(), "!!! Hwdata B match");
-                            }
-                        }
+                            )
+                        };
+                        compare_with_reference(self.dev, c_str!("Hwdata B"), ours, &dyncfg.hw_data_b);
                     }
 
                     Ok(())
@@ -817,32 +855,14 @@ impl<'a> InitDataBuilder::ver<'a> {
                     }
 
                     if !dyncfg.hw_globals.is_empty() {
-                        unsafe {
-                            let mut matches: bool = true;
-                            let sla = core::slice::from_raw_parts(
+                        // SAFETY: `raw` is a fully initialized plain-data firmware struct.
+                        let ours = unsafe {
+                            core::slice::from_raw_parts(
                                 raw as *const raw::Globals::ver as *const u8,
                                 core::mem::size_of::<raw::Globals::ver>(),
-                            );
-                            if sla.len() != dyncfg.hw_globals.len() {
-                                matches = false;
-                                dev_err!(
-                                    self.dev.as_ref(),
-                                    "!!! Globals size mismatch: {} {}",
-                                    sla.len(),
-                                    dyncfg.hw_globals.len(),
-                                );
-                            }
-                            for i in 0..core::cmp::min(sla.len(), dyncfg.hw_globals.len()) {
-                                if sla[i] != dyncfg.hw_globals[i] {
-                                    matches = false;
-                                    dev_err!(self.dev.as_ref(), "!!! Globals first mismatch: {i}");
-                                    break;
-                                }
-                            }
-                            if matches {
-                                dev_info!(self.dev.as_ref(), "!!! Globals match");
-                            }
-                        }
+                            )
+                        };
+                        compare_with_reference(self.dev, c_str!("Globals"), ours, &dyncfg.hw_globals);
                     }
 
                     Ok(())
