@@ -380,8 +380,12 @@ static const u32 dcp_primary_formats[] = {
 #endif
 };
 
+/*
+ * No ARGB2101010 on overlays: its 2-bit alpha quantizes the antialiased
+ * edges and shadow of cursors (compositors pick the first 10-bit alpha
+ * format they find), so keep overlays at 8-bit alpha.
+ */
 static const u32 dcp_overlay_formats[] = {
-	DRM_FORMAT_ARGB2101010,
 	DRM_FORMAT_ARGB8888,
 	DRM_FORMAT_ABGR8888,
 	DRM_FORMAT_NV12,
