@@ -49,6 +49,32 @@ impl F32 {
         F32(u)
     }
 
+    /// Return the value scaled by 1000 and truncated towards zero, for display purposes.
+    pub(crate) const fn to_milli(self) -> i64 {
+        let exp = ((self.0 >> 23) & 0xff) as i32;
+        if exp == 0 || exp == 0xff {
+            return 0;
+        }
+        let frac = ((self.0 & 0x7fffff) | 0x800000) as i64 * 1000;
+        let shift = exp - 127 - 23;
+        let val = if shift >= 0 {
+            if shift > 20 {
+                i64::MAX
+            } else {
+                frac << shift
+            }
+        } else if shift < -63 {
+            0
+        } else {
+            frac >> -shift
+        };
+        if self.0 & (1 << 31) != 0 {
+            -val
+        } else {
+            val
+        }
+    }
+
     // Convert a `f32` value into an F32
     //
     // This must ONLY be used in const context. Use the `f32!{}` macro to do it safely.
