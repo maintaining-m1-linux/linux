@@ -106,6 +106,9 @@ static void apple_crtc_atomic_enable(struct drm_crtc *crtc,
 	struct drm_crtc_state *crtc_state;
 	crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
 
+	/* restart vblank tracking, the timing may have changed */
+	to_apple_crtc(crtc)->vbl_last = 0;
+
 	if (crtc_state->active_changed && crtc_state->active) {
 		struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 		dcp_poweron(apple_crtc->dcp);

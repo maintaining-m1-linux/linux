@@ -17,6 +17,14 @@ struct apple_crtc {
 	struct drm_pending_vblank_event *event;
 	bool vsync_disabled;
 
+	/*
+	 * Software vblank tracking. DCP only reports swap completion through a
+	 * mailbox message with variable latency and has no vblank counter, so
+	 * page flip timestamps are snapped to a phase-tracked vblank grid.
+	 */
+	ktime_t vbl_last;
+	u64 vbl_seq;
+
 	/* Reference to the DCP device owning this CRTC */
 	struct platform_device *dcp;
 };

@@ -13,6 +13,7 @@
 #include <linux/jiffies.h>
 #include <linux/kconfig.h>
 #include <linux/kernel.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/of_address.h>
@@ -103,6 +104,61 @@ static void send_vblank_event(struct drm_device *dev,
  * outputs.
  * This might be a difference between dcp and dcpext.
  */
+static s64 crtc_frame_ns(struct apple_crtc *crtc)
+{
+	const struct drm_display_mode *mode;
+
+	if (!crtc->base.state)
+		return 0;
+	mode = &crtc->base.state->adjusted_mode;
+	if (!mode->clock || !mode->htotal || !mode->vtotal)
+		return 0;
+	return div_u64((u64)mode->htotal * mode->vtotal * 1000000ULL, mode->clock);
+}
+
+/*
+ * Snap a flip completion time to the tracked vblank grid and advance the
+ * vblank sequence. For real swaps the nearest vblank is used and the grid
+ * phase follows the measurement slowly, so mailbox latency jitter does not
+ * end up in the timestamps userspace uses to schedule its next frame. For
+ * frames that were skipped as duplicates (no swap was submitted) the last
+ * vblank before completion is reported without moving the phase.
+ */
+static ktime_t crtc_snap_vblank(struct apple_crtc *crtc, ktime_t t,
+				bool swapped, u64 *seq)
+{
+	s64 period = crtc_frame_ns(crtc), delta, err, n;
+	ktime_t pred;
+
+	if (period <= 0 || !crtc->vbl_last || ktime_before(t, crtc->vbl_last))
+		goto resync;
+
+	delta = ktime_to_ns(ktime_sub(t, crtc->vbl_last));
+	if (delta > 10LL * NSEC_PER_SEC)
+		goto resync;
+
+	n = div64_s64(swapped ? delta + period / 2 : delta, period);
+	pred = ktime_add_ns(crtc->vbl_last, n * period);
+	err = ktime_to_ns(ktime_sub(t, pred));
+
+	if (swapped) {
+		if (n < 1 || abs(err) > period / 4)
+			goto resync;
+		pred = ktime_add_ns(pred, err / 8);
+	}
+
+	crtc->vbl_last = pred;
+	crtc->vbl_seq += n;
+	*seq = crtc->vbl_seq;
+	return pred;
+
+resync:
+	crtc->vbl_last = t;
+	crtc->vbl_seq++;
+	*seq = crtc->vbl_seq;
+	return t;
+}
+
 static void dcp_crtc_send_page_flip_event(struct apple_crtc *crtc,
 					  struct drm_pending_vblank_event *e,
 					  ktime_t now, ktime_t start)
@@ -112,7 +168,6 @@ static void dcp_crtc_send_page_flip_event(struct apple_crtc *crtc,
 	unsigned int pipe = drm_crtc_index(&crtc->base);
 	ktime_t flip;
 
-	seq = 0;
 	if (start != KTIME_MIN) {
 		s64 delta = ktime_us_delta(now, start);
 		if (delta <= 500)
@@ -124,6 +179,7 @@ static void dcp_crtc_send_page_flip_event(struct apple_crtc *crtc,
 	} else {
 		flip = now;
 	}
+	flip = crtc_snap_vblank(crtc, flip, start != KTIME_MIN, &seq);
 	e->pipe = pipe;
 	send_vblank_event(dev, e, seq, flip);
 }
