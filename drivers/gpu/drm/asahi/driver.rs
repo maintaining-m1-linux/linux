@@ -29,6 +29,7 @@ use crate::{
     regs, //
 };
 
+use kernel::debugfs;
 use kernel::macros::vtable;
 
 /// Holds a reference to the top-level `GpuManager` object.
@@ -46,6 +47,8 @@ unsafe impl Sync for AsahiData {}
 pub(crate) struct AsahiDriver {
     #[expect(unused)]
     drm: ARef<drm::Device<Self>>,
+    /// debugfs `asahi/power`, kept alive for the lifetime of the device.
+    _power_file: Pin<KBox<debugfs::File<Arc<dyn gpu::GpuManager>>>>,
 }
 
 unsafe impl Send for AsahiDriver {}
@@ -230,8 +233,21 @@ impl platform::Driver for AsahiDriver {
 
         (*drm).gpu.init()?;
 
+        let debugfs_dir = debugfs::Dir::new(c_str!("asahi"));
+        let power_file = KBox::pin_init(
+            debugfs_dir.read_callback_file(
+                c_str!("power"),
+                (*drm).gpu.clone(),
+                &|gpu: &Arc<dyn gpu::GpuManager>, f| gpu.show_power(f),
+            ),
+            GFP_KERNEL,
+        )?;
+
         drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
 
-        Ok(Self { drm })
+        Ok(Self {
+            drm,
+            _power_file: power_file,
+        })
     }
 }
