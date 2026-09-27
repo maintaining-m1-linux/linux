@@ -320,6 +320,8 @@ pub(crate) trait GpuManager: Send + Sync {
     fn get_cfg(&self) -> &'static hw::HwConfig;
     /// Get the dynamic GPU configuration for this SoC.
     fn get_dyncfg(&self) -> &hw::DynConfig;
+    /// Write the current firmware-reported power/performance state (debugfs).
+    fn show_power(&self, f: &mut kernel::fmt::Formatter<'_>) -> kernel::fmt::Result;
     /// Register an unused context as garbage
     fn free_context(&self, data: KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>);
     /// Check whether the GPU is crashed
@@ -1596,6 +1598,54 @@ impl GpuManager for GpuManager::ver {
 
     fn get_dyncfg(&self) -> &hw::DynConfig {
         &self.dyncfg
+    }
+
+    fn show_power(&self, f: &mut kernel::fmt::Formatter<'_>) -> kernel::fmt::Result {
+        use core::ptr::read_volatile;
+
+        let pwr = &self.dyncfg.pwr;
+        // The firmware updates these fields behind our back, so read them volatilely.
+        let (actual, tgt, cur, status, freq, temp, avg_mw, cur_mw, max_ps, min_ps) =
+            self.initdata.runtime_pointers.hwdata_a.with(|raw, _inner| {
+                // SAFETY: All pointers come from valid references to the mapped HwDataA.
+                unsafe {
+                    (
+                        read_volatile(&raw.actual_pstate),
+                        read_volatile(&raw.tgt_pstate),
+                        read_volatile(&raw.cur_pstate),
+                        raw.pwr_status.load(Ordering::Relaxed),
+                        read_volatile(&raw.freq_mhz),
+                        read_volatile(&raw.temp_c),
+                        read_volatile(&raw.avg_power_mw),
+                        read_volatile(&raw.cur_power_mw_2),
+                        read_volatile(&raw.max_pstate_scaled),
+                        read_volatile(&raw.min_pstate_scaled),
+                    )
+                }
+            });
+        let freq = freq.to_milli();
+
+        writeln!(f, "pwr_status:        {status:#x}")?;
+        writeln!(f, "actual_pstate:     {actual}")?;
+        writeln!(f, "target_pstate:     {tgt}")?;
+        writeln!(f, "cur_pstate:        {cur}")?;
+        writeln!(f, "min_pstate_scaled: {min_ps}")?;
+        writeln!(f, "max_pstate_scaled: {max_ps}")?;
+        writeln!(f, "freq_mhz:          {}.{:03}", freq / 1000, freq % 1000)?;
+        writeln!(f, "temp_c:            {temp}")?;
+        writeln!(f, "avg_power_mw:      {avg_mw}")?;
+        writeln!(f, "cur_power_mw:      {cur_mw}")?;
+        writeln!(f, "max_power_mw:      {}", pwr.max_power_mw)?;
+        writeln!(f, "perf_states:")?;
+        for (i, ps) in pwr.perf_states.iter().enumerate() {
+            writeln!(
+                f,
+                "  {i:2}: {:5} MHz {:6} mW",
+                ps.freq_hz / 1_000_000,
+                ps.pwr_mw
+            )?;
+        }
+        Ok(())
     }
 
     fn free_context(&self, ctx: KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>) {
