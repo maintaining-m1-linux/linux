@@ -1325,14 +1325,18 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		 * flip-flops around. Make sure we are always blending them
 		 * in the correct order.
 		 *
-		 * Despite having 4 surfaces, we can only blend two. Surface 0 is
-		 * also unusable on some machines, so ignore it.
+		 * Despite having 4 surfaces, we can only blend two. DCP stacks
+		 * higher surface indices on top, so map zpos 0 (primary) to
+		 * surface 0 and overlays above it, matching the upstream
+		 * default iomfb surfaces <0 1>. Mapping primary to a higher
+		 * surface than the overlay puts the cursor underneath the
+		 * primary plane and shows a black box around it.
 		 */
 
-		l = MAX_BLEND_SURFACES - new_state->normalized_zpos;
-		old_l = MAX_BLEND_SURFACES - old_state->normalized_zpos;
+		l = new_state->normalized_zpos;
+		old_l = old_state->normalized_zpos;
 
-		WARN_ON(l > MAX_BLEND_SURFACES);
+		WARN_ON(l >= MAX_BLEND_SURFACES);
 
 		req->swap.swap_enabled |= BIT(l);
 
