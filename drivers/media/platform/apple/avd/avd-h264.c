@@ -758,7 +758,7 @@ static int avd_h264_run(struct avd_ctx *ctx)
 	avd_run_postamble(ctx, &run.base);
 
 	if (!avd_h264_refs_valid(&run)) {
-		dev_dbg_ratelimited(avd->dev,
+		dev_dbg_ratelimited(ctx->dev->dev,
 				    "slice references an invalid DPB entry, dropping frame\n");
 		return -EINVAL;
 	}
