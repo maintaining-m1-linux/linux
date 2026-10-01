@@ -469,8 +469,12 @@ static int rpm_callback(int (*cb)(struct device *), struct device *dev)
 	if (retval == -EACCES)
 		retval = -EAGAIN;
 
-	if (retval != -EAGAIN && retval != -EBUSY)
+	if (retval != -EAGAIN && retval != -EBUSY) {
 		dev->power.runtime_error = retval;
+		dev_err(dev, "AVDBG pm: runtime_error=%d recorded (%ps)\n",
+			retval, cb);
+		dump_stack();
+	}
 
 	return retval;
 }
@@ -794,6 +798,9 @@ static int rpm_resume(struct device *dev, int rpmflags)
 
  repeat:
 	if (dev->power.runtime_error) {
+		dev_err_ratelimited(dev,
+				    "AVDBG pm: resume sticky error %d\n",
+				    dev->power.runtime_error);
 		retval = -EINVAL;
 	} else if (dev->power.disable_depth > 0) {
 		if (dev->power.runtime_status == RPM_ACTIVE &&

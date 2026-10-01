@@ -876,6 +876,7 @@ out:
 	genpd->synced_poweroff = false;
 	return 0;
 err:
+	dev_err(&genpd->dev, "AVDBG genpd: power_on callback ret=%d\n", ret);
 	raw_notifier_call_chain(&genpd->power_notifiers, GENPD_NOTIFY_OFF,
 				NULL);
 	return ret;

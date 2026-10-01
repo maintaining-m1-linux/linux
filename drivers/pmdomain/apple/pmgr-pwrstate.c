@@ -142,7 +142,10 @@ static bool apple_pmgr_ps_is_active(struct apple_pmgr_ps *ps)
 
 static int apple_pmgr_ps_power_on(struct generic_pm_domain *genpd)
 {
-	return apple_pmgr_ps_set(genpd, APPLE_PMGR_PS_ACTIVE, true);
+	int ret = apple_pmgr_ps_set(genpd, APPLE_PMGR_PS_ACTIVE, true);
+
+	dev_err(&genpd->dev, "AVDBG pwrstate: power_on ret=%d\n", ret);
+	return ret;
 }
 
 static int apple_pmgr_ps_power_off(struct generic_pm_domain *genpd)
