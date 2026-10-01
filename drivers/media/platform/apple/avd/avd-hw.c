@@ -51,6 +51,9 @@ int avd_boot(struct avd_dev *avd)
 
 	memcpy_toio(avd->code, avd->fw->data, avd->fw->size);
 
+	dev_info(avd->dev, "AVDBG boot: fw %zu bytes, hw %04x\n",
+		 avd->fw->size, readl_relaxed(avd->ctrl));
+
 	writel_relaxed(AVD_MBOX_ENABLE, avd->mbox + AVD_REG_MBOX1_STATUS);
 	writel_relaxed(AVD_MBOX1_NOT_EMPTY, avd->mbox + AVD_REG_MBOX_IRQ_ENABLE);
 	writel_relaxed(AVD_RUN_CTRL_UNK_RUN, avd->mbox + AVD_REG_RUN_CTRL);
@@ -58,9 +61,14 @@ int avd_boot(struct avd_dev *avd)
 	/* wait for cm3 to boot */
 	ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET,
 			val, val == 1, 10, 10000);
-	if (ret)
+	if (ret) {
+		dev_info(avd->dev, "AVDBG boot: TIMEOUT flag0=%08x mbox=%08x\n",
+			 readl_relaxed(avd->mbox + AVD_REG_FLAG0_SET),
+			 readl_relaxed(avd->mbox + AVD_REG_MBOX1_RETRIEVE));
 		return ret;
+	}
 
+	dev_info(avd->dev, "AVDBG boot: OK\n");
 	return 0;
 }
 

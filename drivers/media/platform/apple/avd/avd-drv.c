@@ -160,6 +160,8 @@ int avd_submit_job(struct avd_ctx *ctx)
 		AVD_OP_EXEC_FLAG_START_REV3(avd->variant->revision == 3);
 
 	ctx->fifo_idx = 0;
+	dev_info(ctx->dev->dev, "AVDBG submit_job: codec=%d segs=%zu\n",
+		 sub->codec, sub->num);
 	for (i = 0; i < sub->codec; i++)
 		vp += avd->variant->vp_slots[i];
 
@@ -250,6 +252,7 @@ static irqreturn_t avd_irq_handler(int irq, void *data)
 		return IRQ_HANDLED;
 
 	status = readl(avd->mbox + AVD_REG_MBOX1_RETRIEVE);
+	dev_info_ratelimited(avd->dev, "AVDBG irq status=%08x\n", status);
 
 	writel(AVD_MBOX1_NOT_EMPTY, avd->mbox + AVD_REG_MBOX_IRQ_CLR);
 
@@ -293,9 +296,12 @@ static void avd_device_run(void *priv)
 
 	ret = pm_runtime_resume_and_get(avd->dev);
 	if (ret < 0) {
+		dev_info(avd->dev, "AVDBG run: resume failed %d\n", ret);
 		avd_job_finish_no_pm(ctx, VB2_BUF_STATE_ERROR);
 		return;
 	}
+
+	dev_info(avd->dev, "AVDBG device_run\n");
 
 	ret = desc->ops->run(ctx);
 	if (ret)
