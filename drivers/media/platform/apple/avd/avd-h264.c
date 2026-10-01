@@ -738,9 +738,11 @@ static void avd_h264_done(struct avd_ctx *ctx, struct vb2_v4l2_buffer *src_buf,
 	struct avd_h264_ctx *h264_ctx = ctx->priv;
 	int i;
 
-	if (!(src_buf->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF))
+	if (!(src_buf->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF)) {
 		for (i = 0; i < h264_ctx->slice_num; i++)
 			avd_buf_free(avd, &h264_ctx->slices[i]);
+		h264_ctx->slice_num = 0;
+	}
 }
 
 static enum avd_image_fmt avd_h264_get_image_fmt(struct avd_ctx *ctx,
