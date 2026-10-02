@@ -717,6 +717,16 @@ static int avd_probe(struct platform_device *pdev)
 	if (IS_ERR(avd->ctrl))
 		return PTR_ERR(avd->ctrl);
 
+	/* Map the full AVD aperture (Apple DT layout: one window at
+	 * 0x268000000) so the t8103 preinit sequence can touch the blocks
+	 * outside the DT-defined sub-ranges. */
+	if (avd->variant->revision == 3) {
+		avd->full = devm_ioremap(avd->dev, AVD_FULL_BASE_PHYS,
+					 AVD_FULL_SIZE);
+		if (!avd->full)
+			dev_warn(avd->dev, "AVDBG: full aperture map failed\n");
+	}
+
 	avd->domain = iommu_get_domain_for_dev(avd->dev);
 	if (avd->domain) {
 		avd->empty_domain = iommu_paging_domain_alloc(avd->dev);

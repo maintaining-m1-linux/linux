@@ -203,6 +203,8 @@ struct avd_dev {
 	struct iommu_domain *domain;
 	struct iommu_domain *empty_domain;
 
+	void __iomem *full; /* full aperture, t8103 preinit only (optional) */
+
 	struct mutex vdev_lock;
 
 	struct reset_control *rstc;

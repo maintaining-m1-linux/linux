@@ -30,4 +30,29 @@
 #define AVD_REG_MCPUE_UNK68	0x68
 #define AVD_REG_MCPUE_UNK74	0x74
 
+/*
+ * The Apple DT maps the whole AVD complex as one window:
+ * base 0x268000000, size 0x1404000 (verified against macOS AppleAVD.kext
+ * v865 register tables and m1n1 proxyclient/m1n1/fw/avd/__init__.py).
+ * Offsets below are relative to that base.
+ */
+#define AVD_FULL_BASE_PHYS	0x268000000ULL
+#define AVD_FULL_SIZE		0x1404000
+
+/* ADS (0x269000000 block): power/valid registers */
+#define AVD_OFF_ADS_PWR		0x1000000	/* macOS DevicePwrOn: = 0xfff */
+#define AVD_OFF_ADS_STATUS	0x1002010	/* macOS waits (val & 0x7f0) == 0x7f0 */
+
+/* DART (dart-avd at 0x269010000): init masks (m1n1 + macOS) */
+#define AVD_OFF_DART_0		0x1010060
+#define AVD_DART_MASK_0		0x80016100
+#define AVD_OFF_DART_1		0x1010068
+#define AVD_DART_MASK_1		0xf0f0f
+#define AVD_OFF_DART_2		0x101006c
+#define AVD_DART_MASK_2		0x80808
+
+/* macOS t8103 PMGR ps register of avd_sys (from t8103-pmgr.dtsi @0x410) */
+#define AVD_PMGR_BASE_PHYS	0x23b700000ULL
+#define AVD_PMGR_AVD_SYS	0x410
+
 #endif /* AVD_REGS_H_ */
