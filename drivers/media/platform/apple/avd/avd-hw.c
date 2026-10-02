@@ -2,6 +2,7 @@
 
 #include "linux/dev_printk.h"
 #include <linux/iopoll.h>
+#include <linux/reset.h>
 
 #include "avd.h"
 #include "avd-regs.h"
@@ -49,14 +50,39 @@ int avd_boot(struct avd_dev *avd)
 		dev_info_once(avd->dev, "booting hw version: %04x",
 				readl_relaxed(avd->ctrl));
 
+	/* Quiesce the coprocessor first, mirroring macOS AppleAVD.kext
+	 * CAvdM3Mcpu::disableMCPUE() (disasm, macOS 15.7.1 v865, t8103). */
+	writel_relaxed(AVD_RUN_CTRL_UNK_STOP, avd->mbox + AVD_REG_RUN_CTRL);
+	writel_relaxed(1, avd->mbox + AVD_REG_FLAG0_CLR);
+	writel_relaxed(0, avd->mbox + AVD_REG_MCPUE_UNK10);
+	writel_relaxed(0, avd->mbox + AVD_REG_MCPUE_UNK50);
+
 	memcpy_toio(avd->code, avd->fw->data, avd->fw->size);
+
+	dev_info(avd->dev,
+		 "AVDBG boot: fw[0..2]=%08x %08x %08x rb=%08x %08x %08x rst=%d\n",
+		 ((u32 *)avd->fw->data)[0], ((u32 *)avd->fw->data)[1],
+		 ((u32 *)avd->fw->data)[2],
+		 readl_relaxed(avd->code), readl_relaxed(avd->code + 4),
+		 readl_relaxed(avd->code + 8),
+		 avd->rstc ? reset_control_status(avd->rstc) : -999);
 
 	dev_info(avd->dev, "AVDBG boot: fw %zu bytes, hw %04x\n",
 		 avd->fw->size, readl_relaxed(avd->ctrl));
 
+	/* Power up the coprocessor, mirroring CAvdM3Mcpu::enableMCPUE().
+	 * The +0x50/+0x68/+0x74 control writes are part of every macOS boot;
+	 * where the boot chain leaves them disabled (observed on j293) the
+	 * CM3 never sets FLAG0 without them.  No-op where already enabled
+	 * (j274), so this is safe to run unconditionally. */
+	writel_relaxed(1, avd->mbox + AVD_REG_MCPUE_UNK50);
+	writel_relaxed(1, avd->mbox + AVD_REG_MCPUE_UNK74);
+	writel_relaxed(1, avd->mbox + AVD_REG_MCPUE_UNK68);
 	writel_relaxed(AVD_MBOX_ENABLE, avd->mbox + AVD_REG_MBOX1_STATUS);
 	writel_relaxed(AVD_MBOX1_NOT_EMPTY, avd->mbox + AVD_REG_MBOX_IRQ_ENABLE);
 	writel_relaxed(AVD_RUN_CTRL_UNK_RUN, avd->mbox + AVD_REG_RUN_CTRL);
+	dev_info(avd->dev, "AVDBG boot: run_ctrl rb=%08x\n",
+		 readl_relaxed(avd->mbox + AVD_REG_RUN_CTRL));
 
 	/* wait for cm3 to boot */
 	ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET,

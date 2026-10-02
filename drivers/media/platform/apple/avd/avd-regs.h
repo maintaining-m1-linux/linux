@@ -19,4 +19,15 @@
 #define AVD_REG_FLAG0_SET	0x90
 #define AVD_REG_FLAG0_CLR	0x98
 
+/*
+ * Coprocessor (CM3) power/clock control registers in the mailbox page,
+ * written by macOS CAvdM3Mcpu::enableMCPUE()/disableMCPUE() on every boot.
+ * +0x50 is cleared then set around the firmware load; +0x68/+0x74 are set
+ * before RUN_CTRL.  Without these the CM3 never starts on some machines.
+ */
+#define AVD_REG_MCPUE_UNK10	0x10
+#define AVD_REG_MCPUE_UNK50	0x50
+#define AVD_REG_MCPUE_UNK68	0x68
+#define AVD_REG_MCPUE_UNK74	0x74
+
 #endif /* AVD_REGS_H_ */
