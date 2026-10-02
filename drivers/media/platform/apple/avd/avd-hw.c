@@ -197,28 +197,31 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 	void __iomem *f = avd->full;
 	void __iomem *pmgr;
 	u32 v;
-	int i, ret;
+	int i;
 
-	/* macOS CAvdWrapCtrlViola::DevicePwrOn: power the ADS block */
+	/* macOS CAvdWrapCtrlViola::DevicePwrOn: power the ADS block.
+	 * Write-only here: reading the ADS block before its power domain
+	 * is up faults (SError) — macOS polls it only after full power-on. */
+	dev_info(avd->dev, "AVDBG preinit: stage 1/6 ads-pwr (w 0x1000000=0xfff)\n");
 	writel(0xfff, f + AVD_OFF_ADS_PWR);
 
-	/* macOS AppleAVD::waitValidADSStatus: (status & 0x7f0) == 0x7f0 */
-	ret = readl_poll_timeout(f + AVD_OFF_ADS_STATUS, v,
-				 (v & 0x7f0) == 0x7f0, 10000, 5000000);
-	dev_info(avd->dev, "AVDBG boot: ads=%08x (%s)\n",
-		 readl(f + AVD_OFF_ADS_STATUS), ret ? "NOT READY" : "ready");
-
 	/* dart-avd init masks (m1n1 + macOS agree) */
+	dev_info(avd->dev, "AVDBG preinit: stage 2/6 dart masks\n");
 	writel(readl(f + AVD_OFF_DART_0) | AVD_DART_MASK_0, f + AVD_OFF_DART_0);
 	writel(readl(f + AVD_OFF_DART_1) | AVD_DART_MASK_1, f + AVD_OFF_DART_1);
 	writel(readl(f + AVD_OFF_DART_2) | AVD_DART_MASK_2, f + AVD_OFF_DART_2);
 
 	/* macOS CAvdMcpu::init(clearDMEM): clear SRAM */
+	dev_info(avd->dev, "AVDBG preinit: stage 3/6 sram clear\n");
 	memset_io(f + 0x108c000, 0, 0xc000);
 
+	dev_info(avd->dev, "AVDBG preinit: stage 4/6 wrap init (%zu regs)\n",
+		 ARRAY_SIZE(t8103_wrap_init));
 	for (i = 0; i < ARRAY_SIZE(t8103_wrap_init); i++)
 		writel(t8103_wrap_init[i].val, f + t8103_wrap_init[i].off);
 
+	dev_info(avd->dev, "AVDBG preinit: stage 5/6 dma tunables (%zu regs)\n",
+		 ARRAY_SIZE(t8103_dma_tunables));
 	for (i = 0; i < ARRAY_SIZE(t8103_dma_tunables); i++) {
 		v = t8103_dma_tunables[i].val;
 		if (t8103_dma_tunables[i].or)
@@ -227,6 +230,7 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 	}
 
 	/* read-only diagnostic: pmgr ps registers around avd_sys (@0x410) */
+	dev_info(avd->dev, "AVDBG preinit: stage 6/6 pmgr dump\n");
 	pmgr = ioremap(AVD_PMGR_BASE_PHYS + 0x3a0, 0x100);
 	if (pmgr) {
 		dev_info(avd->dev, "AVDBG boot: pmgr[0x3a0..0x490] %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
@@ -302,10 +306,9 @@ int avd_boot(struct avd_dev *avd)
 	ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET,
 			val, val == 1, 10, 10000);
 	if (ret) {
-		dev_info(avd->dev, "AVDBG boot: TIMEOUT flag0=%08x mbox=%08x ads=%08x\n",
+		dev_info(avd->dev, "AVDBG boot: TIMEOUT flag0=%08x mbox=%08x\n",
 			 readl_relaxed(avd->mbox + AVD_REG_FLAG0_SET),
-			 readl_relaxed(avd->mbox + AVD_REG_MBOX1_RETRIEVE),
-			 avd->full ? readl(avd->full + AVD_OFF_ADS_STATUS) : 0);
+			 readl_relaxed(avd->mbox + AVD_REG_MBOX1_RETRIEVE));
 		return ret;
 	}
 
