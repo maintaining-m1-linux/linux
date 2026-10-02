@@ -192,24 +192,37 @@ static const struct avd_init_reg t8103_dma_tunables[] = {
 	{ 0x1098080, 0xffffffff, 0 },
 };
 
+/* Log every preinit write: the last printed line before a crash
+ * identifies the faulting register. */
+static void avd_preinit_write(struct avd_dev *avd, u32 off, u32 val, int or)
+{
+	if (or)
+		dev_info(avd->dev, "AVDBG wr: [%08x] |= %08x (was %08x)\n",
+			 off, val, readl(avd->full + off));
+	else
+		dev_info(avd->dev, "AVDBG wr: [%08x] = %08x\n", off, val);
+	if (or)
+		val |= readl(avd->full + off);
+	writel(val, avd->full + off);
+}
+
 static void avd_t8103_preinit(struct avd_dev *avd)
 {
 	void __iomem *f = avd->full;
 	void __iomem *pmgr;
-	u32 v;
 	int i;
 
 	/* macOS CAvdWrapCtrlViola::DevicePwrOn: power the ADS block.
 	 * Write-only here: reading the ADS block before its power domain
 	 * is up faults (SError) — macOS polls it only after full power-on. */
 	dev_info(avd->dev, "AVDBG preinit: stage 1/6 ads-pwr (w 0x1000000=0xfff)\n");
-	writel(0xfff, f + AVD_OFF_ADS_PWR);
+	avd_preinit_write(avd, AVD_OFF_ADS_PWR, 0xfff, 0);
 
 	/* dart-avd init masks (m1n1 + macOS agree) */
 	dev_info(avd->dev, "AVDBG preinit: stage 2/6 dart masks\n");
-	writel(readl(f + AVD_OFF_DART_0) | AVD_DART_MASK_0, f + AVD_OFF_DART_0);
-	writel(readl(f + AVD_OFF_DART_1) | AVD_DART_MASK_1, f + AVD_OFF_DART_1);
-	writel(readl(f + AVD_OFF_DART_2) | AVD_DART_MASK_2, f + AVD_OFF_DART_2);
+	avd_preinit_write(avd, AVD_OFF_DART_0, AVD_DART_MASK_0, 1);
+	avd_preinit_write(avd, AVD_OFF_DART_1, AVD_DART_MASK_1, 1);
+	avd_preinit_write(avd, AVD_OFF_DART_2, AVD_DART_MASK_2, 1);
 
 	/* macOS CAvdMcpu::init(clearDMEM): clear SRAM */
 	dev_info(avd->dev, "AVDBG preinit: stage 3/6 sram clear\n");
@@ -218,16 +231,14 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 	dev_info(avd->dev, "AVDBG preinit: stage 4/6 wrap init (%zu regs)\n",
 		 ARRAY_SIZE(t8103_wrap_init));
 	for (i = 0; i < ARRAY_SIZE(t8103_wrap_init); i++)
-		writel(t8103_wrap_init[i].val, f + t8103_wrap_init[i].off);
+		avd_preinit_write(avd, t8103_wrap_init[i].off,
+				  t8103_wrap_init[i].val, t8103_wrap_init[i].or);
 
 	dev_info(avd->dev, "AVDBG preinit: stage 5/6 dma tunables (%zu regs)\n",
 		 ARRAY_SIZE(t8103_dma_tunables));
-	for (i = 0; i < ARRAY_SIZE(t8103_dma_tunables); i++) {
-		v = t8103_dma_tunables[i].val;
-		if (t8103_dma_tunables[i].or)
-			v |= readl(f + t8103_dma_tunables[i].off);
-		writel(v, f + t8103_dma_tunables[i].off);
-	}
+	for (i = 0; i < ARRAY_SIZE(t8103_dma_tunables); i++)
+		avd_preinit_write(avd, t8103_dma_tunables[i].off,
+				  t8103_dma_tunables[i].val, t8103_dma_tunables[i].or);
 
 	/* read-only diagnostic: pmgr ps registers around avd_sys (@0x410) */
 	dev_info(avd->dev, "AVDBG preinit: stage 6/6 pmgr dump\n");
