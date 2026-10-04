@@ -3,6 +3,7 @@
 #include "linux/dev_printk.h"
 #include <linux/iopoll.h>
 #include <linux/io.h>
+#include <linux/module.h>
 #include <linux/reset.h>
 
 #include "avd.h"
@@ -48,7 +49,36 @@
  *  - macOS 15.7.1 AppleAVD.kext v865 (arm64e kernelcache disasm; see
  *    fox-builder fox-builder-macos/AVD_LINUX_DISASM.md)
  *  - m1n1 proxyclient/m1n1/fw/avd/__init__.py (the original bring-up RE)
+ *
+ * Every stage is individually selectable via the preinit_mask module
+ * parameter so a bad stage can be isolated without rebuilding:
+ *
+ *   bit 0  ADS block power write (0x269000000 = 0xfff)
+ *   bit 1  DART-AVD init masks
+ *   bit 2  SRAM clear
+ *   bit 3  wrap ctrl init table
+ *   bit 4  DMA tunables table
+ *   bit 5  pmgr ps dump (read-only diagnostic)
+ *
+ * Default 0 runs no preinit (avd4-equivalent: MCPUE boot sequence only)
+ * and is always safe to boot.  Pass apple_avd.preinit_mask=<mask> on the
+ * kernel command line; the driver is built in so the value can be changed
+ * per boot from the GRUB editor.  dmesg prints the mask at boot and the
+ * last "AVDBG wr:" line before a crash identifies the faulting register.
  */
+#define AVD_PREINIT_ADS		BIT(0)
+#define AVD_PREINIT_DART	BIT(1)
+#define AVD_PREINIT_SRAM	BIT(2)
+#define AVD_PREINIT_WRAP	BIT(3)
+#define AVD_PREINIT_TUNABLES	BIT(4)
+#define AVD_PREINIT_PMGR	BIT(5)
+
+static int preinit_mask;
+module_param(preinit_mask, int, 0644);
+MODULE_PARM_DESC(preinit_mask,
+	"t8103 preinit stage mask: 0=none (default, safe), bit0 ads bit1 dart "
+	"bit2 sram bit3 wrap bit4 tunables bit5 pmgr-dump");
+
 struct avd_init_reg {
 	u32 off;
 	u32 val;
@@ -212,56 +242,70 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 	void __iomem *pmgr;
 	int i;
 
+	dev_info(avd->dev, "AVDBG preinit: mask=0x%02x\n", preinit_mask);
+
 	/* macOS CAvdWrapCtrlViola::DevicePwrOn: power the ADS block.
 	 * Write-only here: reading the ADS block before its power domain
 	 * is up faults (SError) — macOS polls it only after full power-on. */
-	dev_info(avd->dev, "AVDBG preinit: stage 1/6 ads-pwr (w 0x1000000=0xfff)\n");
-	avd_preinit_write(avd, AVD_OFF_ADS_PWR, 0xfff, 0);
+	if (preinit_mask & AVD_PREINIT_ADS) {
+		dev_info(avd->dev, "AVDBG preinit: stage 1/6 ads-pwr (w 0x1000000=0xfff)\n");
+		avd_preinit_write(avd, AVD_OFF_ADS_PWR, 0xfff, 0);
+	}
 
 	/* dart-avd init masks (m1n1 + macOS agree) */
-	dev_info(avd->dev, "AVDBG preinit: stage 2/6 dart masks\n");
-	avd_preinit_write(avd, AVD_OFF_DART_0, AVD_DART_MASK_0, 1);
-	avd_preinit_write(avd, AVD_OFF_DART_1, AVD_DART_MASK_1, 1);
-	avd_preinit_write(avd, AVD_OFF_DART_2, AVD_DART_MASK_2, 1);
+	if (preinit_mask & AVD_PREINIT_DART) {
+		dev_info(avd->dev, "AVDBG preinit: stage 2/6 dart masks\n");
+		avd_preinit_write(avd, AVD_OFF_DART_0, AVD_DART_MASK_0, 1);
+		avd_preinit_write(avd, AVD_OFF_DART_1, AVD_DART_MASK_1, 1);
+		avd_preinit_write(avd, AVD_OFF_DART_2, AVD_DART_MASK_2, 1);
+	}
 
 	/* macOS CAvdMcpu::init(clearDMEM): clear SRAM */
-	dev_info(avd->dev, "AVDBG preinit: stage 3/6 sram clear\n");
-	memset_io(f + 0x108c000, 0, 0xc000);
+	if (preinit_mask & AVD_PREINIT_SRAM) {
+		dev_info(avd->dev, "AVDBG preinit: stage 3/6 sram clear\n");
+		memset_io(f + 0x108c000, 0, 0xc000);
+	}
 
-	dev_info(avd->dev, "AVDBG preinit: stage 4/6 wrap init (%zu regs)\n",
-		 ARRAY_SIZE(t8103_wrap_init));
-	for (i = 0; i < ARRAY_SIZE(t8103_wrap_init); i++)
-		avd_preinit_write(avd, t8103_wrap_init[i].off,
-				  t8103_wrap_init[i].val, t8103_wrap_init[i].or);
+	if (preinit_mask & AVD_PREINIT_WRAP) {
+		dev_info(avd->dev, "AVDBG preinit: stage 4/6 wrap init (%zu regs)\n",
+			 ARRAY_SIZE(t8103_wrap_init));
+		for (i = 0; i < ARRAY_SIZE(t8103_wrap_init); i++)
+			avd_preinit_write(avd, t8103_wrap_init[i].off,
+					  t8103_wrap_init[i].val, t8103_wrap_init[i].or);
+	}
 
-	dev_info(avd->dev, "AVDBG preinit: stage 5/6 dma tunables (%zu regs)\n",
-		 ARRAY_SIZE(t8103_dma_tunables));
-	for (i = 0; i < ARRAY_SIZE(t8103_dma_tunables); i++)
-		avd_preinit_write(avd, t8103_dma_tunables[i].off,
-				  t8103_dma_tunables[i].val, t8103_dma_tunables[i].or);
+	if (preinit_mask & AVD_PREINIT_TUNABLES) {
+		dev_info(avd->dev, "AVDBG preinit: stage 5/6 dma tunables (%zu regs)\n",
+			 ARRAY_SIZE(t8103_dma_tunables));
+		for (i = 0; i < ARRAY_SIZE(t8103_dma_tunables); i++)
+			avd_preinit_write(avd, t8103_dma_tunables[i].off,
+					  t8103_dma_tunables[i].val, t8103_dma_tunables[i].or);
+	}
 
 	/* read-only diagnostic: pmgr ps registers around avd_sys (@0x410) */
-	dev_info(avd->dev, "AVDBG preinit: stage 6/6 pmgr dump\n");
-	pmgr = ioremap(AVD_PMGR_BASE_PHYS + 0x3a0, 0x100);
-	if (pmgr) {
-		dev_info(avd->dev, "AVDBG boot: pmgr[0x3a0..0x490] %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
-			 readl(pmgr + 0x000), readl(pmgr + 0x008),
-			 readl(pmgr + 0x010), readl(pmgr + 0x018),
-			 readl(pmgr + 0x020), readl(pmgr + 0x028),
-			 readl(pmgr + 0x030), readl(pmgr + 0x038),
-			 readl(pmgr + 0x040), readl(pmgr + 0x048),
-			 readl(pmgr + 0x050), readl(pmgr + 0x058),
-			 readl(pmgr + 0x060), readl(pmgr + 0x068),
-			 readl(pmgr + 0x070), readl(pmgr + 0x078),
-			 readl(pmgr + 0x080), readl(pmgr + 0x088),
-			 readl(pmgr + 0x090), readl(pmgr + 0x098),
-			 readl(pmgr + 0x0a0), readl(pmgr + 0x0a8),
-			 readl(pmgr + 0x0b0), readl(pmgr + 0x0b8),
-			 readl(pmgr + 0x0c0), readl(pmgr + 0x0c8),
-			 readl(pmgr + 0x0d0), readl(pmgr + 0x0d8),
-			 readl(pmgr + 0x0e0), readl(pmgr + 0x0e8),
-			 readl(pmgr + 0x0f0), readl(pmgr + 0x0f8));
-		iounmap(pmgr);
+	if (preinit_mask & AVD_PREINIT_PMGR) {
+		dev_info(avd->dev, "AVDBG preinit: stage 6/6 pmgr dump\n");
+		pmgr = ioremap(AVD_PMGR_BASE_PHYS + 0x3a0, 0x100);
+		if (pmgr) {
+			dev_info(avd->dev, "AVDBG boot: pmgr[0x3a0..0x490] %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+				 readl(pmgr + 0x000), readl(pmgr + 0x008),
+				 readl(pmgr + 0x010), readl(pmgr + 0x018),
+				 readl(pmgr + 0x020), readl(pmgr + 0x028),
+				 readl(pmgr + 0x030), readl(pmgr + 0x038),
+				 readl(pmgr + 0x040), readl(pmgr + 0x048),
+				 readl(pmgr + 0x050), readl(pmgr + 0x058),
+				 readl(pmgr + 0x060), readl(pmgr + 0x068),
+				 readl(pmgr + 0x070), readl(pmgr + 0x078),
+				 readl(pmgr + 0x080), readl(pmgr + 0x088),
+				 readl(pmgr + 0x090), readl(pmgr + 0x098),
+				 readl(pmgr + 0x0a0), readl(pmgr + 0x0a8),
+				 readl(pmgr + 0x0b0), readl(pmgr + 0x0b8),
+				 readl(pmgr + 0x0c0), readl(pmgr + 0x0c8),
+				 readl(pmgr + 0x0d0), readl(pmgr + 0x0d8),
+				 readl(pmgr + 0x0e0), readl(pmgr + 0x0e8),
+				 readl(pmgr + 0x0f0), readl(pmgr + 0x0f8));
+			iounmap(pmgr);
+		}
 	}
 }
 
@@ -274,7 +318,9 @@ int avd_boot(struct avd_dev *avd)
 		dev_info_once(avd->dev, "booting hw version: %04x",
 				readl_relaxed(avd->ctrl));
 
-	/* Full t8103 bring-up: ADS power, DART, wrap ctrl, DMA tunables.
+	/* Full t8103 bring-up: ADS power, DART, wrap ctrl, DMA tunables, each
+	 * stage gated by the apple_avd.preinit_mask kernel parameter (default
+	 * 0 = skip everything, avd4-equivalent).
 	 * No-op on hardware where the boot chain already did this (j274). */
 	if (avd->variant->revision == 3 && avd->full)
 		avd_t8103_preinit(avd);
