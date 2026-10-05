@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "linux/dev_printk.h"
+#include <linux/delay.h>
 #include <linux/iopoll.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -59,6 +60,9 @@
  *   bit 3  wrap ctrl init table
  *   bit 4  DMA tunables table
  *   bit 5  pmgr ps dump (read-only diagnostic)
+ *   bit 6  ads-probe: characterize ADS register access on j293 (reads
+ *            first, then the DevicePwrOn write with readback, then the
+ *            macOS waitValidADSStatus poll).  Runs before stage 1.
  *
  * Default 0 runs no preinit (avd4-equivalent: MCPUE boot sequence only)
  * and is always safe to boot.  Pass apple_avd.preinit_mask=<mask> on the
@@ -72,12 +76,13 @@
 #define AVD_PREINIT_WRAP	BIT(3)
 #define AVD_PREINIT_TUNABLES	BIT(4)
 #define AVD_PREINIT_PMGR	BIT(5)
+#define AVD_PREINIT_PROBE	BIT(6)
 
 static int preinit_mask;
 module_param(preinit_mask, int, 0644);
 MODULE_PARM_DESC(preinit_mask,
 	"t8103 preinit stage mask: 0=none (default, safe), bit0 ads bit1 dart "
-	"bit2 sram bit3 wrap bit4 tunables bit5 pmgr-dump");
+	"bit2 sram bit3 wrap bit4 tunables bit5 pmgr-dump bit6 ads-probe");
 
 struct avd_init_reg {
 	u32 off;
@@ -244,6 +249,33 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 
 	dev_info(avd->dev, "AVDBG preinit: mask=0x%02x\n", preinit_mask);
 
+	/* ADS access characterization (j293): reads first — nobody has ever
+	 * read the ADS block on this machine; avd6 dropped reads preemptively
+	 * and stage 1 always ran first in avd5/6/7.  If the reads survive,
+	 * perform the macOS DevicePwrOn write with readback and then poll the
+	 * status the way CAvdApCommViola::waitValidADSStatus does (mask 0x7f0). */
+	if (preinit_mask & AVD_PREINIT_PROBE) {
+		u32 st, pwr;
+		int i;
+
+		dev_info(avd->dev, "AVDBG preinit: stage 0/6 ads-probe (reads first)\n");
+		st = readl(avd->full + AVD_OFF_ADS_STATUS);
+		dev_info(avd->dev, "AVDBG adsprobe: status(0x1002010)=%08x\n", st);
+		pwr = readl(avd->full + AVD_OFF_ADS_PWR);
+		dev_info(avd->dev, "AVDBG adsprobe: pwr(0x1000000)=%08x\n", pwr);
+		dev_info(avd->dev, "AVDBG adsprobe: writing 0xfff\n");
+		writel(0xfff, avd->full + AVD_OFF_ADS_PWR);
+		dev_info(avd->dev, "AVDBG adsprobe: readback=%08x\n",
+			 readl(avd->full + AVD_OFF_ADS_PWR));
+		for (i = 0; i < 20; i++) {
+			st = readl(avd->full + AVD_OFF_ADS_STATUS);
+			dev_info(avd->dev, "AVDBG adsprobe: poll[%d] status=%08x\n", i, st);
+			if ((st & 0x7f0) == 0x7f0)
+				break;
+			msleep(10);
+		}
+	}
+
 	/* macOS CAvdWrapCtrlViola::DevicePwrOn: power the ADS block.
 	 * Write-only here: reading the ADS block before its power domain
 	 * is up faults (SError) — macOS polls it only after full power-on. */
@@ -260,9 +292,11 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 		avd_preinit_write(avd, AVD_OFF_DART_2, AVD_DART_MASK_2, 1);
 	}
 
-	/* macOS CAvdMcpu::init(clearDMEM): clear SRAM */
+	/* macOS CAvdMcpu::init(clearDMEM) + m1n1 fw/avd boot(): clear CODE
+	 * (0x1080000) and SRAM (0x108c000) */
 	if (preinit_mask & AVD_PREINIT_SRAM) {
-		dev_info(avd->dev, "AVDBG preinit: stage 3/6 sram clear\n");
+		dev_info(avd->dev, "AVDBG preinit: stage 3/6 code+sram clear\n");
+		memset_io(f + 0x1080000, 0, 0xc000);
 		memset_io(f + 0x108c000, 0, 0xc000);
 	}
 
