@@ -63,6 +63,14 @@
  *   bit 6  ads-probe: characterize ADS register access on j293 (reads
  *            first, then the DevicePwrOn write with readback, then the
  *            macOS waitValidADSStatus poll).  Runs before stage 1.
+ *   bit 7  macos-timing: sleep 726 ms after power-on and before fw
+ *            upload (macOS setPowerStateOn window), then poll the ADS
+ *            valid bits (ctrl+0x1002010 & 0x7f0, up to 500x10 ms) after
+ *            RUN_CTRL, and extend the FLAG0 wait to 5 s.  Diagnostic
+ *            only — never fails the boot.  See
+ *            fox-builder fox-builder-macos/AVD_CLOCKGATE_LINUX.md §6.1:
+ *            macOS does no clock-gate MMIO/SMC message for AVD, so the
+ *            remaining deltas are timing and patience.
  *
  * Default 0 runs no preinit (avd4-equivalent: MCPUE boot sequence only)
  * and is always safe to boot.  Pass apple_avd.preinit_mask=<mask> on the
@@ -77,12 +85,14 @@
 #define AVD_PREINIT_TUNABLES	BIT(4)
 #define AVD_PREINIT_PMGR	BIT(5)
 #define AVD_PREINIT_PROBE	BIT(6)
+#define AVD_PREINIT_TIMING	BIT(7)
 
 static int preinit_mask;
 module_param(preinit_mask, int, 0644);
 MODULE_PARM_DESC(preinit_mask,
 	"t8103 preinit stage mask: 0=none (default, safe), bit0 ads bit1 dart "
-	"bit2 sram bit3 wrap bit4 tunables bit5 pmgr-dump bit6 ads-probe");
+	"bit2 sram bit3 wrap bit4 tunables bit5 pmgr-dump bit6 ads-probe "
+	"bit7 macos-timing (726 ms settle + ADS-valid poll + 5 s FLAG0 wait)");
 
 struct avd_init_reg {
 	u32 off;
@@ -341,6 +351,19 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 			iounmap(pmgr);
 		}
 	}
+
+	/* macOS AppleAVD::setPowerStateOn keeps a ~726 ms window between the
+	 * power-on chain and the fw upload (0x8c90748(0x2b680128,...) site,
+	 * AVD_POWER_RE.md §5 erratum 5; the helper doubles as a kdebug trace
+	 * site, so treat 726 ms as "macOS waits a while here" — AVD_CLOCKGATE_
+	 * LINUX.md §6.1.3).  j293's FLAG0 never rises with the immediate
+	 * upload; give the block the same settle time.  Runs last so the
+	 * sleep lands immediately before avd_boot() uploads the fw. */
+	if (preinit_mask & AVD_PREINIT_TIMING) {
+		dev_info(avd->dev,
+			 "AVDBG preinit: stage 7/7 macos-timing: sleep 726 ms before fw upload\n");
+		msleep(726);
+	}
 }
 
 int avd_boot(struct avd_dev *avd)
@@ -393,9 +416,40 @@ int avd_boot(struct avd_dev *avd)
 	dev_info(avd->dev, "AVDBG boot: run_ctrl rb=%08x\n",
 		 readl_relaxed(avd->mbox + AVD_REG_RUN_CTRL));
 
-	/* wait for cm3 to boot */
-	ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET,
-			val, val == 1, 10, 10000);
+	/* macos-timing (bit 7): CAvdApCommViola::waitValidADSStatus poll.
+	 * macOS samples ctrl+0x1002010 for (v & 0x7f0) == 0x7f0 after fw
+	 * start (10 ms x 500, ~5 s) and observes 0x0 -> 0x7f0 ~400 ms after
+	 * start even without fw upload — so on healthy hardware these bits
+	 * rise on their own.  Diagnostic only: tells us whether j293's ADS
+	 * block ever becomes valid, i.e. CM3-alive-but-slow vs never-started.
+	 * NOTE: placed after RUN (macOS ordering) — reading ADS before its
+	 * power domain is up faults (see stage 1 comment above). */
+	if (avd->variant->revision == 3 && avd->full &&
+	    (preinit_mask & AVD_PREINIT_TIMING)) {
+		u32 st = readl(avd->full + AVD_OFF_ADS_STATUS);
+		int i;
+
+		dev_info(avd->dev, "AVDBG boot: ads-valid initial status=%08x\n", st);
+		for (i = 0; i < 50; i++) {
+			if ((st & 0x7f0) == 0x7f0)
+				break;
+			msleep(10);
+			st = readl(avd->full + AVD_OFF_ADS_STATUS);
+		}
+		dev_info(avd->dev,
+			 "AVDBG boot: ads-valid after ~%d ms status=%08x %s\n",
+			 i * 10, st, (st & 0x7f0) == 0x7f0 ? "VALID" : "NOT-VALID");
+	}
+
+	/* wait for cm3 to boot.  macos-timing (bit 7) extends the window to
+	 * 5 s (matching the macOS ADS poll patience) in case j293's CM3 is
+	 * just slow; default stays at the j274-proven 10 ms. */
+	if (preinit_mask & AVD_PREINIT_TIMING)
+		ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET,
+				val, val == 1, 10000, 5000000);
+	else
+		ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET,
+				val, val == 1, 10, 10000);
 	if (ret) {
 		dev_info(avd->dev, "AVDBG boot: TIMEOUT flag0=%08x mbox=%08x\n",
 			 readl_relaxed(avd->mbox + AVD_REG_FLAG0_SET),
