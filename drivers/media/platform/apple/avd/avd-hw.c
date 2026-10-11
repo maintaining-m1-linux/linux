@@ -390,9 +390,13 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 		if (ps) {
 			reg = readl(ps);
 			dev_info(avd->dev, "AVDBG pskick: initial ps=%08x\n", reg);
-			/* off: clear DEV_DISABLE|PS_RESET|AUTO_ENABLE|FLAGS|TARGET */
-			reg &= ~0x1000143f;
+			/* off: clear DEV_DISABLE|PS_RESET|AUTO_ENABLE|FLAGS|TARGET
+			 * (exact apple_pmgr_ps_set clear mask; bit31 GO and the
+			 * PS_ACTUAL status nibble are left untouched) */
+			pr_emerg("AVDBGX PK1: writing ps target 0 (off)\n");
+			reg &= ~0x1000140f;
 			writel(reg, ps);
+			pr_emerg("AVDBGX PK2: off write returned, polling actual\n");
 			for (i = 0; i < 100; i++) {
 				cur = readl(ps);
 				if ((cur & 0xf0) == 0x0)
@@ -401,12 +405,15 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 			}
 			dev_info(avd->dev, "AVDBG pskick: off -> ps=%08x (actual %x)\n",
 				 cur, (cur >> 4) & 0xf);
+			pr_emerg("AVDBGX PK3: sleeping 50 ms\n");
 			msleep(50);
 			/* on: same clear + target 0xf, then AUTO_ENABLE */
 			reg = readl(ps);
-			reg &= ~0x1000143f;
+			reg &= ~0x1000140f;
 			reg |= 0xf;
+			pr_emerg("AVDBGX PK4: writing ps target 0xf (on)\n");
 			writel(reg, ps);
+			pr_emerg("AVDBGX PK5: on write returned, polling actual\n");
 			for (i = 0; i < 100; i++) {
 				cur = readl(ps);
 				if (((cur >> 4) & 0xf) == 0xf)
@@ -418,6 +425,7 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 			writel(reg, ps);
 			dev_info(avd->dev, "AVDBG pskick: on  -> ps=%08x (actual %x)\n",
 				 readl(ps), (readl(ps) >> 4) & 0xf);
+			pr_emerg("AVDBGX PK6: ps-kick done\n");
 			iounmap(ps);
 		}
 	}
@@ -485,6 +493,7 @@ int avd_boot(struct avd_dev *avd)
 	writel_relaxed(AVD_RUN_CTRL_UNK_RUN, avd->mbox + AVD_REG_RUN_CTRL);
 	dev_info(avd->dev, "AVDBG boot: run_ctrl rb=%08x\n",
 		 readl_relaxed(avd->mbox + AVD_REG_RUN_CTRL));
+	pr_emerg("AVDBGX T1: RUN_CTRL set (freeze after this = poll phase)\n");
 
 	/* macos-timing (bit 7): CAvdApCommViola::waitValidADSStatus poll.
 	 * macOS samples ctrl+0x1002010 for (v & 0x7f0) == 0x7f0 after fw
@@ -538,9 +547,9 @@ int avd_boot(struct avd_dev *avd)
 			u32 st;
 			int i;
 
-			dev_info(avd->dev,
-				 "AVDBG boot: ads-postrun: write 0x1000000 <- 0xfff\n");
+			pr_emerg("AVDBGX ADS1: writing 0x1000000 <- 0xfff (post-RUN)\n");
 			writel(0xfff, avd->full + AVD_OFF_ADS_PWR);
+			pr_emerg("AVDBGX ADS2: write returned\n");
 			dev_info(avd->dev, "AVDBG boot: ads-postrun: pwr readback=%08x\n",
 				 readl(avd->full + AVD_OFF_ADS_PWR));
 
@@ -555,6 +564,7 @@ int avd_boot(struct avd_dev *avd)
 				 "AVDBG boot: ads-postrun: ads-valid after ~%d ms status=%08x %s\n",
 				 i * 10, st, (st & 0x7f0) == 0x7f0 ? "VALID" : "NOT-VALID");
 
+			pr_emerg("AVDBGX ADS3: re-polling FLAG0 5 s\n");
 			ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET,
 					val, val == 1, 10000, 5000000);
 			if (!ret) {
