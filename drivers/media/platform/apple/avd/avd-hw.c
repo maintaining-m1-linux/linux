@@ -71,6 +71,21 @@
  *            fox-builder fox-builder-macos/AVD_CLOCKGATE_LINUX.md §6.1:
  *            macOS does no clock-gate MMIO/SMC message for AVD, so the
  *            remaining deltas are timing and patience.
+ *            avd10/t0 (mask=0x80): safe (reads OK post-RUN), but ADS
+ *            never becomes valid and FLAG0 never rises.
+ *   bit 8  ads-postrun: on FLAG0 timeout, retry the ADS power write
+ *            (0x269000000 <- 0xfff — the j274/m1n1 DevicePwrOn write that
+ *            SError-panics pre-RUN on j293) AFTER RUN_CTRL, then re-poll
+ *            ADS-valid and FLAG0 (5 s each).  Tests whether the write is
+ *            accepted post-RUN and whether an unpowered ADS block is what
+ *            blocks the CM3 firmware from setting FLAG0.
+ *   bit 9  ps-kick: re-cycle AVD_SYS ps off/on (target 0 -> 0xf with the
+ *            exact apple_pmgr_ps_set choreography + AUTO_ENABLE) at
+ *            preinit time.  Linux powers AVD_SYS at ~1.9 s, possibly
+ *            before the PMC applies rails; macOS powers the block seconds
+ *            after boot through its power-state chain.  Re-kicks the
+ *            power when the system is settled.  Runs before bit 7's
+ *            sleep so the block gets the same 726 ms settle.
  *
  * Default 0 runs no preinit (avd4-equivalent: MCPUE boot sequence only)
  * and is always safe to boot.  Pass apple_avd.preinit_mask=<mask> on the
@@ -86,13 +101,17 @@
 #define AVD_PREINIT_PMGR	BIT(5)
 #define AVD_PREINIT_PROBE	BIT(6)
 #define AVD_PREINIT_TIMING	BIT(7)
+#define AVD_PREINIT_ADS_POSTRUN	BIT(8)
+#define AVD_PREINIT_PSKICK	BIT(9)
 
 static int preinit_mask;
 module_param(preinit_mask, int, 0644);
 MODULE_PARM_DESC(preinit_mask,
 	"t8103 preinit stage mask: 0=none (default, safe), bit0 ads bit1 dart "
 	"bit2 sram bit3 wrap bit4 tunables bit5 pmgr-dump bit6 ads-probe "
-	"bit7 macos-timing (726 ms settle + ADS-valid poll + 5 s FLAG0 wait)");
+	"bit7 macos-timing (726 ms settle + ADS-valid poll + 5 s FLAG0 wait) "
+	"bit8 ads-postrun (retry: write ADS pwr 0xfff after RUN + re-poll) "
+	"bit9 ps-kick (re-cycle AVD_SYS ps off/on through the genpd sequence)");
 
 struct avd_init_reg {
 	u32 off;
@@ -352,6 +371,57 @@ static void avd_t8103_preinit(struct avd_dev *avd)
 		}
 	}
 
+	/* avd10/t0 result (mask=0x80): ADS status reads are safe after RUN_CTRL
+	 * (no SError), but the valid bits (0x1002010 & 0x7f0) stay 0 forever and
+	 * FLAG0 never rises even with 5 s patience.  macOS j293 powers the ADS
+	 * block without the 0xfff write via its power-state chain, hours after
+	 * boot — while Linux fires the genpd power-on at ~1.9 s, possibly before
+	 * the PMC applies the rails, leaving the block half-alive (readable but
+	 * never valid).  This stage re-cycles AVD_SYS ps off/on through the
+	 * exact apple_pmgr_ps_set register choreography to re-kick the power
+	 * at a later, settled time.  Runs before the macos-timing sleep. */
+	if (preinit_mask & AVD_PREINIT_PSKICK) {
+		void __iomem *ps;
+		u32 reg, cur;
+		int i;
+
+		dev_info(avd->dev, "AVDBG preinit: stage 8 ps-kick: AVD_SYS ps off/on\n");
+		ps = ioremap(AVD_PMGR_BASE_PHYS + 0x410, 4);
+		if (ps) {
+			reg = readl(ps);
+			dev_info(avd->dev, "AVDBG pskick: initial ps=%08x\n", reg);
+			/* off: clear DEV_DISABLE|PS_RESET|AUTO_ENABLE|FLAGS|TARGET */
+			reg &= ~0x1000143f;
+			writel(reg, ps);
+			for (i = 0; i < 100; i++) {
+				cur = readl(ps);
+				if ((cur & 0xf0) == 0x0)
+					break;
+				udelay(10);
+			}
+			dev_info(avd->dev, "AVDBG pskick: off -> ps=%08x (actual %x)\n",
+				 cur, (cur >> 4) & 0xf);
+			msleep(50);
+			/* on: same clear + target 0xf, then AUTO_ENABLE */
+			reg = readl(ps);
+			reg &= ~0x1000143f;
+			reg |= 0xf;
+			writel(reg, ps);
+			for (i = 0; i < 100; i++) {
+				cur = readl(ps);
+				if (((cur >> 4) & 0xf) == 0xf)
+					break;
+				udelay(10);
+			}
+			reg = readl(ps);
+			reg |= 0x10000000; /* AUTO_ENABLE */
+			writel(reg, ps);
+			dev_info(avd->dev, "AVDBG pskick: on  -> ps=%08x (actual %x)\n",
+				 readl(ps), (readl(ps) >> 4) & 0xf);
+			iounmap(ps);
+		}
+	}
+
 	/* macOS AppleAVD::setPowerStateOn keeps a ~726 ms window between the
 	 * power-on chain and the fw upload (0x8c90748(0x2b680128,...) site,
 	 * AVD_POWER_RE.md §5 erratum 5; the helper doubles as a kdebug trace
@@ -454,6 +524,47 @@ int avd_boot(struct avd_dev *avd)
 		dev_info(avd->dev, "AVDBG boot: TIMEOUT flag0=%08x mbox=%08x\n",
 			 readl_relaxed(avd->mbox + AVD_REG_FLAG0_SET),
 			 readl_relaxed(avd->mbox + AVD_REG_MBOX1_RETRIEVE));
+
+		/* ads-postrun (bit 8): the ADS power write (0x269000000 <- 0xfff)
+		 * SError-panics BEFORE fw upload on j293 (avd5/6/7), so it has
+		 * never been tried after RUN_CTRL.  t0 (avd10 mask=0x80) proved
+		 * ADS reads are safe post-RUN and the block stays unpowered
+		 * (status 0x0, never valid) — j274/m1n1 power it with exactly
+		 * this write.  Try it now, then re-poll ADS-valid and FLAG0.
+		 * If the write still faults, the freeze comes after all 3 GRUB
+		 * markers and the last dmesg line localizes it. */
+		if ((preinit_mask & AVD_PREINIT_ADS_POSTRUN) &&
+		    avd->variant->revision == 3 && avd->full) {
+			u32 st;
+			int i;
+
+			dev_info(avd->dev,
+				 "AVDBG boot: ads-postrun: write 0x1000000 <- 0xfff\n");
+			writel(0xfff, avd->full + AVD_OFF_ADS_PWR);
+			dev_info(avd->dev, "AVDBG boot: ads-postrun: pwr readback=%08x\n",
+				 readl(avd->full + AVD_OFF_ADS_PWR));
+
+			st = readl(avd->full + AVD_OFF_ADS_STATUS);
+			for (i = 0; i < 50; i++) {
+				if ((st & 0x7f0) == 0x7f0)
+					break;
+				msleep(10);
+				st = readl(avd->full + AVD_OFF_ADS_STATUS);
+			}
+			dev_info(avd->dev,
+				 "AVDBG boot: ads-postrun: ads-valid after ~%d ms status=%08x %s\n",
+				 i * 10, st, (st & 0x7f0) == 0x7f0 ? "VALID" : "NOT-VALID");
+
+			ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET,
+					val, val == 1, 10000, 5000000);
+			if (!ret) {
+				dev_info(avd->dev, "AVDBG boot: OK (ads-postrun)\n");
+				return 0;
+			}
+			dev_info(avd->dev,
+				 "AVDBG boot: ads-postrun: FLAG0 still 0 (%08x) after retry\n",
+				 readl_relaxed(avd->mbox + AVD_REG_FLAG0_SET));
+		}
 		return ret;
 	}
 
