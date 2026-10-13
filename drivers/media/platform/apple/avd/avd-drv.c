@@ -160,8 +160,6 @@ int avd_submit_job(struct avd_ctx *ctx)
 		AVD_OP_EXEC_FLAG_START_REV3(avd->variant->revision == 3);
 
 	ctx->fifo_idx = 0;
-	dev_info(ctx->dev->dev, "AVDBG submit_job: codec=%d segs=%zu\n",
-		 sub->codec, sub->num);
 	for (i = 0; i < sub->codec; i++)
 		vp += avd->variant->vp_slots[i];
 
@@ -252,7 +250,6 @@ static irqreturn_t avd_irq_handler(int irq, void *data)
 		return IRQ_HANDLED;
 
 	status = readl(avd->mbox + AVD_REG_MBOX1_RETRIEVE);
-	dev_info_ratelimited(avd->dev, "AVDBG irq status=%08x\n", status);
 
 	writel(AVD_MBOX1_NOT_EMPTY, avd->mbox + AVD_REG_MBOX_IRQ_CLR);
 
@@ -296,12 +293,9 @@ static void avd_device_run(void *priv)
 
 	ret = pm_runtime_resume_and_get(avd->dev);
 	if (ret < 0) {
-		dev_info(avd->dev, "AVDBG run: resume failed %d\n", ret);
 		avd_job_finish_no_pm(ctx, VB2_BUF_STATE_ERROR);
 		return;
 	}
-
-	dev_info(avd->dev, "AVDBG device_run\n");
 
 	ret = desc->ops->run(ctx);
 	if (ret)
@@ -327,7 +321,6 @@ static int avd_queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->lock = &ctx->dev->vdev_lock;
 	src_vq->dev = ctx->dev->v4l2_dev.dev;
 	src_vq->supports_requests = true;
-	src_vq->allow_cache_hints = true;
 
 	ret = vb2_queue_init(src_vq);
 	if (ret)
@@ -344,7 +337,6 @@ static int avd_queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	dst_vq->lock = &ctx->dev->vdev_lock;
 	dst_vq->dev = ctx->dev->v4l2_dev.dev;
-	dst_vq->allow_cache_hints = true;
 
 	return vb2_queue_init(dst_vq);
 }
@@ -716,16 +708,6 @@ static int avd_probe(struct platform_device *pdev)
 	avd->ctrl = devm_platform_ioremap_resource_byname(pdev, "ctrl");
 	if (IS_ERR(avd->ctrl))
 		return PTR_ERR(avd->ctrl);
-
-	/* Map the full AVD aperture (Apple DT layout: one window at
-	 * 0x268000000) so the t8103 preinit sequence can touch the blocks
-	 * outside the DT-defined sub-ranges. */
-	if (avd->variant->revision == 3) {
-		avd->full = devm_ioremap(avd->dev, AVD_FULL_BASE_PHYS,
-					 AVD_FULL_SIZE);
-		if (!avd->full)
-			dev_warn(avd->dev, "AVDBG: full aperture map failed\n");
-	}
 
 	avd->domain = iommu_get_domain_for_dev(avd->dev);
 	if (avd->domain) {

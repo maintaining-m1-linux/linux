@@ -117,9 +117,6 @@ static int apple_pmgr_ps_set(struct generic_pm_domain *genpd, u32 pstate, bool a
 		dev_err(ps->dev, "PS %s: Failed to reach power state 0x%x (now: 0x%x)\n",
 			genpd->name, pstate, reg);
 
-	dev_err(ps->dev, "AVDBG ps_set: %s state 0x%x ret=%d cur=0x%x\n",
-		genpd->name, pstate, ret, cur);
-
 	if (auto_enable) {
 		/* Not all devices implement this; this is a no-op where not implemented. */
 		reg |= APPLE_PMGR_AUTO_ENABLE;
@@ -145,10 +142,7 @@ static bool apple_pmgr_ps_is_active(struct apple_pmgr_ps *ps)
 
 static int apple_pmgr_ps_power_on(struct generic_pm_domain *genpd)
 {
-	int ret = apple_pmgr_ps_set(genpd, APPLE_PMGR_PS_ACTIVE, true);
-
-	dev_err(&genpd->dev, "AVDBG pwrstate: power_on ret=%d\n", ret);
-	return ret;
+	return apple_pmgr_ps_set(genpd, APPLE_PMGR_PS_ACTIVE, true);
 }
 
 static int apple_pmgr_ps_power_off(struct generic_pm_domain *genpd)
